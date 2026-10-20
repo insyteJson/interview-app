@@ -33,10 +33,11 @@ def test_participant_flow_and_admin(tmp_path, monkeypatch):
     at.session_state["_classifier_override"] = fake
     at.run()
     assert not at.exception
-    # consent screen
+    # consent screen (a form: ticking does not rerun; the check happens on submit)
+    at.button[0].click().run()
+    assert at.error and "tick statements 1 to 4" in at.error[0].value and at.checkbox(key="consent_1")
     for k in ("consent_1", "consent_2", "consent_3", "consent_4"):
         at.checkbox(key=k).check()
-    at.run()
     at.button[0].click().run()
     assert not at.exception
     texts = [m.markdown[0].value for m in at.chat_message if m.markdown]
@@ -48,6 +49,8 @@ def test_participant_flow_and_admin(tmp_path, monkeypatch):
     at.button(key="rf_submit").click().run()
     assert not at.exception
     assert at.error and "add the company" in at.error[0].value and "when it started" in at.error[0].value
+    assert "choose the type of job" in at.error[0].value
+    at.selectbox(key="rf_0_kind").select("Full-time")
     # complete it, add a hobby with no period
     at.text_input(key="rf_0_org").input("a startup")
     at.text_input(key="rf_0_start").input("01/2024")
@@ -58,7 +61,7 @@ def test_participant_flow_and_admin(tmp_path, monkeypatch):
     at.button(key="rf_submit").click().run()
     assert not at.exception, at.exception
     msgs = [m.markdown[0].value for m in at.chat_message if m.markdown]
-    assert any("**Job:** IT team lead, a startup, since 01/2024" in x and "**Hobby:** formation dancer" in x
+    assert any("**Job:** IT team lead (Full-time), a startup, since 01/2024" in x and "**Hobby:** formation dancer" in x
                for x in msgs)
     assert engine.Q["Q_AIM"].format(label="IT team lead at a startup") in at.chat_message[-1].markdown[0].value
     assert at.chat_input

@@ -133,14 +133,18 @@ if sess is None:
             st.warning("DRAFT consent text: unresolved [CONFIRM] items. Do not send this link to participants yet.")
         st.markdown(consent_text)
         st.markdown("**Please tick each statement. Statements 1 to 4 are required to take part; statement 5 is optional.**")
-        c1 = st.checkbox("1. I have read and understood the information above and have had the opportunity to ask questions.", key="consent_1")
-        c2 = st.checkbox("2. I consent to my answers, my profile, my questionnaire answers and my anonymised CV being processed for this study as described.", key="consent_2")
-        c3 = st.checkbox("3. I explicitly consent to my answers being transferred to Anthropic PBC and to the Streamlit hosting service in the United States, as described in section 6. I have been informed of the risks of this transfer.", key="consent_3")
-        c4 = st.checkbox("4. I consent to my profile and anonymised CV being shown, under my participant code, to up to 10 recruiters for research purposes.", key="consent_4")
-        c5 = st.checkbox("5. (optional) I consent to short anonymised quotations from my interview being included in the thesis.", key="consent_5")
-        st.caption("I understand that I can withdraw my consent at any time.")
-        agree = c1 and c2 and c3 and c4
-    if consent_box.button("Start the interview", disabled=not agree, type="primary"):
+        # A form: ticking a box does not reload the page (which jumped back to the top); checked on submit.
+        with st.form("consent_form", border=False):
+            c1 = st.checkbox("1. I have read and understood the information above and have had the opportunity to ask questions.", key="consent_1")
+            c2 = st.checkbox("2. I consent to my answers, my profile, my questionnaire answers and my anonymised CV being processed for this study as described.", key="consent_2")
+            c3 = st.checkbox("3. I explicitly consent to my answers being transferred to Anthropic PBC and to the Streamlit hosting service in the United States, as described in section 6. I have been informed of the risks of this transfer.", key="consent_3")
+            c4 = st.checkbox("4. I consent to my profile and anonymised CV being shown, under my participant code, to up to 10 recruiters for research purposes.", key="consent_4")
+            c5 = st.checkbox("5. (optional) I consent to short anonymised quotations from my interview being included in the thesis.", key="consent_5")
+            st.caption("I understand that I can withdraw my consent at any time.")
+            start = st.form_submit_button("Start the interview", type="primary")
+        if start and not (c1 and c2 and c3 and c4):
+            st.error("Please tick statements 1 to 4 to take part.")
+    if start and c1 and c2 and c3 and c4:
         consent_slot.empty()
         with st.spinner("Preparing your interview…"):
             state = engine.new_state(code, MODEL, MAX_POSITIONS)

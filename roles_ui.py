@@ -15,6 +15,7 @@ _CSS = """<style>
 .rf-cat span{font-weight:400;color:#6b7280;font-size:.82rem;margin-left:.35rem}
 .rf-note{color:#6b7280;font-size:.82rem;margin:.1rem 0 .3rem 0}
 [class*="st-key-rfrow"] [data-testid="InputInstructions"]{display:none}
+[data-testid="stMainBlockContainer"]{max-width:60rem !important}
 [data-stale="true"],[data-stale="true"] *{opacity:1 !important;transition:none !important;animation:none !important}
 @media (max-width: 640px){
  [class*="st-key-rfrow"] [data-testid="stHorizontalBlock"]{flex-wrap:wrap !important;row-gap:.45rem !important}
@@ -24,6 +25,9 @@ _CSS = """<style>
  [class*="st-key-rfrow"] [data-testid="stColumn"]:nth-child(3){order:3}
  [class*="st-key-rfrow"] [data-testid="stColumn"]:nth-child(4){order:4}
  [class*="st-key-rfrow"] [data-testid="stColumn"]:last-child{flex:0 0 2rem !important;order:1}
+ [class*="st-key-rfrow_job"] [data-testid="stColumn"]:nth-child(3){flex:1 1 100% !important;order:3}
+ [class*="st-key-rfrow_job"] [data-testid="stColumn"]:nth-child(5){order:5}
+ [class*="st-key-rfrow_job"] [data-testid="stColumn"]:last-child{flex:0 0 2rem !important;order:1}
 }
 </style>"""
 
@@ -49,7 +53,8 @@ def collect() -> list[dict]:
     out = []
     for r in _rows():
         k = f"rf_{r['id']}_"
-        out.append({"cat": r["cat"], "title": st.session_state.get(k + "title", ""),
+        out.append({"cat": r["cat"], "kind": st.session_state.get(k + "kind") or "",
+                    "title": st.session_state.get(k + "title", ""),
                     "org": st.session_state.get(k + "org", ""), "start": st.session_state.get(k + "start", ""),
                     "end": st.session_state.get(k + "end", "")})
     return out
@@ -63,8 +68,13 @@ def clear() -> None:
 def _row(r: dict) -> None:
     spec = roles.CATEGORIES[r["cat"]]
     k = f"rf_{r['id']}_"
-    box = st.container(key=f"rfrow_{r['id']}")
-    if spec["period"] == "none":
+    box = st.container(key=f"rfrow_{r['cat']}_{r['id']}")
+    if r["cat"] == "job":
+        cols = box.columns([2.6, 2.4, 2.1, 1.2, 1.2, 0.45], gap="small", vertical_alignment="center")
+        cols[0].selectbox("Type", roles.JOB_TYPES, index=None, key=k + "kind", placeholder="Type",
+                          label_visibility="collapsed", on_change="ignore")
+        cols = cols[1:]
+    elif spec["period"] == "none":
         cols = box.columns([4, 3.6, 0.45], gap="small", vertical_alignment="center")
     else:
         cols = box.columns([3, 2.6, 1.45, 1.45, 0.45], gap="small", vertical_alignment="center")

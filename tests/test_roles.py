@@ -9,8 +9,10 @@ import pytest  # noqa: E402
 import roles  # noqa: E402
 
 
-def R(cat, title="", org="", start="", end=""):
-    return {"cat": cat, "title": title, "org": org, "start": start, "end": end}
+def R(cat, title="", org="", start="", end="", kind=None):
+    if kind is None:
+        kind = "Full-time" if cat == "job" and title else ""
+    return {"cat": cat, "kind": kind, "title": title, "org": org, "start": start, "end": end}
 
 
 @pytest.mark.parametrize("text,expected", [("2021", (2021, None)), ("3/2021", (2021, 3)), ("03.2021", (2021, 3)),
@@ -30,9 +32,9 @@ def test_now_only_allowed_as_end():
 
 
 def test_job_needs_title_company_and_both_dates():
-    pos, err = roles.normalise([R("job", "Working student")])
+    pos, err = roles.normalise([R("job", "Working student", kind="")])
     assert not pos and len(err) == 1
-    for bit in ("add the company", "when it started", "when it ended"):
+    for bit in ("choose the type of job", "add the company", "when it started", "when it ended"):
         assert bit in err[0]
 
 
@@ -74,7 +76,12 @@ def test_empty_rows_ignored_but_one_entry_required_and_duplicates_refused():
 
 
 def test_summary_and_replay_block():
-    rows = roles.parse_roles_block("ROLES\njob; IT team lead; a startup; 01/2024; now\nhobby; Dancer")
+    rows = roles.parse_roles_block("ROLES\njob; Full-time; IT team lead; a startup; 01/2024; now\nhobby; Dancer")
     pos, err = roles.normalise(rows)
-    assert not err
-    assert roles.summary(pos) == "- **Job:** IT team lead, a startup, since 01/2024\n- **Hobby:** Dancer"
+    assert not err and pos[0]["employment"] == "Full-time"
+    assert roles.summary(pos) == "- **Job:** IT team lead (Full-time), a startup, since 01/2024\n- **Hobby:** Dancer"
+
+
+def test_job_type_not_repeated_when_the_title_says_it():
+    pos, _ = roles.normalise([R("job", "Working student", "Test GmbH", "2021", "2023", kind="Working student")])
+    assert roles.title_with_type(pos[0]) == "Working student" and pos[0]["label"] == "Working student at Test GmbH"

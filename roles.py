@@ -20,8 +20,8 @@ from datetime import date
 CATEGORIES: dict[str, dict] = {
     "job": {
         "name": "Job", "plural": "Jobs", "type": "job",
-        "hint": "paid: employment, student job, internship, freelance",
-        "title": ("Job title", "Job title, e.g. working student"), "org": ("Company", "Company", True),
+        "hint": "paid work, including student jobs, internships and freelance work",
+        "title": ("Job title", "Job title, e.g. software developer"), "org": ("Company", "Company", True),
         "period": "required",
     },
     "volunteering": {
@@ -39,6 +39,8 @@ CATEGORIES: dict[str, dict] = {
     },
 }
 ORDER = ["job", "volunteering", "hobby"]
+JOB_TYPES = ["Full-time", "Part-time", "Working student", "Internship", "Apprenticeship / dual study",
+             "Freelance / self-employed", "Student job / mini-job"]
 MAX_ROLES = 10
 NOW_WORDS = {"now", "today", "present", "current", "currently", "ongoing", "heute", "jetzt", "aktuell"}
 NO_COMPANY = {"self-employed", "self employed", "freelance", "freelancer", "selbstständig", "selbststaendig"}
@@ -95,7 +97,8 @@ def make_label(title: str, org: str | None) -> str:
 
 
 def normalise(entries: list[dict]) -> tuple[list[dict], list[str]]:
-    """Form rows -> (positions, errors). Each row: {cat, title, org, start, end}. Empty rows are ignored."""
+    """Form rows -> (positions, errors). Each row: {cat, kind, title, org, start, end}; kind = job type (jobs only).
+    Empty rows are ignored."""
     positions, errors, count = [], [], {c: 0 for c in CATEGORIES}
     for e in entries:
         cat = e.get("cat")
@@ -105,11 +108,14 @@ def normalise(entries: list[dict]) -> tuple[list[dict], list[str]]:
         title = " ".join((e.get("title") or "").split())
         org = " ".join((e.get("org") or "").split())
         start_t, end_t = (e.get("start") or "").strip(), (e.get("end") or "").strip()
+        kind = (e.get("kind") or "").strip() if cat == "job" else ""
         if not (title or org or start_t or end_t):
             continue  # untouched row
         count[cat] += 1
         name = f"{spec['name']} {count[cat]}"
         problems = []
+        if cat == "job" and kind not in JOB_TYPES:
+            problems.append("choose the type of job")
         if not title:
             problems.append(f"add the {spec['title'][0].lower()}")
         if len(title) > 80 or len(org) > 80:
@@ -141,6 +147,7 @@ def normalise(entries: list[dict]) -> tuple[list[dict], list[str]]:
         positions.append({
             "item": f"{spec['name']}: {title}" + (f", {org}" if org else ""),
             "category": cat, "type": spec["type"], "title": title, "company": org or None,
+            "employment": kind or None,
             "period": fmt_period(start, end),
             "period_from": fmt_date(start) if start else None, "period_to": fmt_date(end) if end else None,
             "label": make_label(title, org or None), "aim": None, "tools": [],
@@ -155,21 +162,34 @@ def normalise(entries: list[dict]) -> tuple[list[dict], list[str]]:
     return positions, errors
 
 
+def title_with_type(p: dict) -> str:
+    """'Software developer (Working student)'; the type is left out if the title already says it."""
+    kind = p.get("employment")
+    if not kind or kind.split(" /")[0].lower() in p["title"].lower():
+        return p["title"]
+    return f"{p['title']} ({kind})"
+
+
 def summary(positions: list[dict]) -> str:
     """The participant's own entries, shown as their chat message and stored as the turn's answer."""
     lines = []
     for p in positions:
-        bits = [p["title"]] + [x for x in (p.get("company"), p.get("period")) if x]
+        bits = [title_with_type(p)] + [x for x in (p.get("company"), p.get("period")) if x]
         lines.append(f"- **{CATEGORIES[p['category']]['name']}:** " + ", ".join(bits))
     return "\n".join(lines)
 
 
 def parse_roles_block(text: str) -> list[dict]:
-    """For replay files: lines 'job; Working student; Test GmbH; 03/2021; 08/2023' (fields may be empty)."""
+    """For replay files: 'job; Full-time; Software developer; Test GmbH; 03/2021; now' (job type only for jobs),
+    'volunteering; Youth coach; FC Example; 2019; now', 'hobby; Marathon runner; Lauftreff'."""
     rows = []
     for line in text.splitlines():
         if not line.strip() or line.strip().upper().startswith("ROLES"):
             continue
-        f = [x.strip() for x in line.split(";")] + [""] * 5
-        rows.append({"cat": f[0].lower(), "title": f[1], "org": f[2], "start": f[3], "end": f[4]})
+        f = [x.strip() for x in line.split(";")] + [""] * 6
+        cat = f[0].lower()
+        if cat == "job":
+            rows.append({"cat": cat, "kind": f[1], "title": f[2], "org": f[3], "start": f[4], "end": f[5]})
+        else:
+            rows.append({"cat": cat, "title": f[1], "org": f[2], "start": f[3], "end": f[4]})
     return rows

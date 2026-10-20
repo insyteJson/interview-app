@@ -307,6 +307,9 @@ class ProfileGenerator:
 
 def role_display(p: dict) -> str:
     title = p.get("title") or p.get("label") or ""
+    kind = p.get("employment")
+    if kind and kind.split(" /")[0].lower() not in title.lower():
+        title = f"{title} ({kind})"
     company = p.get("company")
     return f"{title}, {company}" if company and company.lower() not in title.lower() else title
 

@@ -6,10 +6,10 @@ and check that every question the app would show follows the protocol. Nothing i
     export ANTHROPIC_API_KEY=sk-ant-...
     python replay.py answers.txt            # one answer per paragraph (separated by a blank line)
 
-The first paragraph is the role form, one entry per line ("category; title; company or club; from; to"):
+The first paragraph is the role form, one entry per line (jobs: "job; type; title; company; from; to", others: "category; title; organisation or club; from; to"):
 
     ROLES
-    job; IT team lead; a startup; 01/2024; now
+    job; Full-time; IT team lead; a startup; 01/2024; now
     hobby; Competitive ballroom dancer; TSC Example
     python replay.py answers.txt --model claude-sonnet-5-5
 """

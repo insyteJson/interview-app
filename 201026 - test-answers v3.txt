@@ -1,5 +1,5 @@
 ROLES
-job; IT team lead; a startup; 01/2024; now
+job; Full-time; IT team lead; a startup; 01/2024; now
 hobby; Competitive ballroom dancer
 
 I lead the IT team and make sure our product gets built and shipped.
