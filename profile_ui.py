@@ -1,4 +1,4 @@
-"""Researcher view, part 2: redaction pass, profile generation, operator check, PDF and packet download."""
+"""Researcher view, part 2: redaction pass, same-event review, profile generation, operator check, PDF and packet."""
 
 from __future__ import annotations
 
@@ -19,6 +19,101 @@ def _preview_pngs(pdf: bytes) -> list[bytes]:
     return out
 
 
+def _pairs(pairs) -> set[tuple[str, str]]:
+    return {tuple(sorted(p)) for p in pairs or []}
+
+
+def _merge_step(store, sid: str, state: dict, rules) -> tuple[bool, list]:
+    """Step 2: the researcher decides which flagged pairs are the same event. Returns (ready, saved pairs)."""
+    st.markdown("**Step 2 · Same event told twice.** A candidate may tell one event in answer to two questions. "
+                "Pairs from the same role are listed, most similar first; tick only pairs that describe the same "
+                "event. A ticked pair becomes one entry, shown under both themes and counted once.")
+    cands = pg.duplicate_candidates(state, rules)
+    saved = store.get_merges(sid)
+    saved_pairs = _pairs(saved["pairs"]) if saved else set()
+    if not cands:
+        st.caption("No two moments share a role, so there is nothing to compare.")
+        return True, []
+    by_id = {i["id"]: i for i in state.get("incidents") or []}
+    chosen = []
+    for c in cands:
+        a, b = by_id[c["a"]], by_id[c["b"]]
+        flag = " · likely the same" if c["likely"] else ""
+        title = (f"{c['a']} ({pg.HEADINGS[a['dimension']]}) and {c['b']} ({pg.HEADINGS[b['dimension']]}) · "
+                 f"{c['role']} · overlap {c['score']:.0%}{flag}")
+        with st.expander(title, expanded=c["likely"]):
+            col1, col2 = st.columns(2)
+            for col, inc in ((col1, a), (col2, b)):
+                col.markdown(f"**{inc['id']}**")
+                for name, key in (("Situation", "situation"), ("Action", "action"), ("Outcome", "outcome")):
+                    col.markdown(f"*{name}:* {pg.apply_rules(inc.get(key), rules) or '—'}")
+            if st.checkbox("These describe the same event", value=(c["a"], c["b"]) in saved_pairs,
+                           key=f"dup_{sid}_{c['a']}_{c['b']}"):
+                chosen.append([c["a"], c["b"]])
+    if st.button("Save merge decisions", key=f"mergesave_{sid}"):
+        store.save_merges(sid, chosen)
+        st.rerun()
+    current = saved is not None and _pairs(chosen) == saved_pairs
+    if current:
+        st.caption(f"Merge decisions saved {saved['confirmed_at']:%d.%m.%Y %H:%M} UTC: "
+                   f"{len(saved_pairs)} pair(s) merged.")
+    elif saved:
+        st.warning("The ticks differ from the saved decisions. Save again before generating.")
+    else:
+        st.warning("Save the merge decisions (also when nothing is ticked) before generating.")
+    return current, [list(p) for p in saved_pairs]
+
+
+def _check_v2(prof: dict, log: dict) -> None:
+    st.markdown("*Role purpose lines* (restated from the aim answer; a role without one shows none)")
+    for r, plog in zip(prof["roles"], log.get("purposes", [])):
+        c1, c2 = st.columns(2)
+        c1.markdown(f"**{r['display']}**  \n> {plog.get('aim') or '—'}")
+        if r.get("purpose"):
+            c2.markdown(f"Purpose: {r['purpose']}")
+            for w in plog.get("warnings", []):
+                c2.warning(w)
+        else:
+            c2.caption(f"No purpose line: {plog.get('skipped', 'not generated')}")
+    st.markdown("*Entries*")
+    for x in prof["entries"]:
+        themes = " + ".join(pg.HEADINGS[d] for d in x["dimensions"])
+        ids = " + ".join(x["members"])
+        with st.expander(f"{ids} · {themes} · {x['headline']}"):
+            c1, c2 = st.columns(2)
+            c1.markdown("**Answers (after redaction)**" + (" — merged accounts" if len(x["members"]) > 1 else ""))
+            for e in x["source"]:
+                c1.markdown(f"> {e['answer']}")
+            c2.markdown(f"**{x['headline']}**  \n{x['role']}")
+            c2.markdown(f"Situation: {x['situation']}  \nResult: {x['result']}")
+            for ev in x.get("label_evidence", []):
+                c2.caption(f"Label {ev['name']}: “{ev['quote']}”")
+            for ev in x.get("tag_evidence", []):
+                c2.caption(f"Tag {ev['name']}: “{ev['quote']}”")
+            if x.get("tools"):
+                c2.caption("Tools: " + ", ".join(x["tools"]))
+            for w in x.get("warnings", []):
+                c2.warning(w)
+
+
+def _check_v1(prof: dict) -> None:
+    for d in pg.DIMENSIONS:
+        for x in prof["themes"][d]:
+            with st.expander(f"{x['id']} · {pg.HEADINGS[d]} · {x['headline']}"):
+                c1, c2 = st.columns(2)
+                c1.markdown("**Answers (after redaction)**")
+                for e in x["source"]:
+                    c1.markdown(f"> {e['answer']}")
+                c2.markdown(f"**{x['headline']}**  \n{x['role']}")
+                c2.markdown(f"Situation: {x['situation']}  \nResult: {x['result']}")
+                for ev in x.get("label_evidence", []):
+                    c2.caption(f"Label {ev['name']}: “{ev['quote']}”")
+                for ev in x.get("tag_evidence", []):
+                    c2.caption(f"Tag {ev['name']}: “{ev['quote']}”")
+                for w in x.get("warnings", []):
+                    c2.warning(w)
+
+
 def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_generator) -> None:
     st.subheader("Profile for recruiters")
     if state["status"] != "complete":
@@ -34,7 +129,7 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
                 "and achievements stay; names of people are replaced, e.g. by their role.")
     red = store.get_redaction(sid)
     exchanges = {inc["id"]: pg.incident_exchanges(inc, rows) for inc in incidents}
-    texts = [", ".join(p.get("tools") or []) for p in positions]
+    texts = [", ".join(p.get("tools") or []) for p in positions] + [p.get("aim") or "" for p in positions]
     texts += [e["answer"] for ex in exchanges.values() for e in ex]
     sugg = pg.suggest_identifiers(texts)
     with st.expander("Capitalised words in the answers that may be personal names (a reading aid, not a complete list)"):
@@ -49,6 +144,7 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
         for p in positions:
             st.markdown(f"**{pg.apply_rules(pg.role_display(p), rules)}** ({p.get('period') or 'no period'}) · "
                         f"tools: {pg.apply_rules(', '.join(p.get('tools') or []), rules) or '—'}")
+            st.markdown(f"> Purpose answer: {pg.apply_rules(p.get('aim') or '—', rules)}")
         for inc in incidents:
             st.markdown(f"**{inc['id']} · {inc['position_label']} · {inc['dimension']}**")
             for e in exchanges[inc["id"]]:
@@ -64,72 +160,66 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
     elif red:
         st.warning("The rules differ from the saved redaction. Save again before generating.")
 
-    # ---------------- step 2: generation
-    st.markdown("**Step 2 · Generate**")
+    # ---------------- step 2: same event told twice
+    merges_ready, merge_pairs = _merge_step(store, sid, state, rules)
+
+    # ---------------- step 3: generation
+    st.markdown(f"**Step 3 · Generate** ({pg.PROFILE_VERSION})")
     profs = store.list_profiles(sid)
     reason = st.text_input("Reason for this generation (logged)", key=f"reason_{sid}",
                            value="" if profs else "first generation")
     if st.button("Generate profile", type="primary", key=f"gen_{sid}",
-                 disabled=not (saved_same and reason.strip())):
+                 disabled=not (saved_same and merges_ready and reason.strip())):
         gen = make_generator()
         if gen is None:
             st.error("ANTHROPIC_API_KEY is not configured.")
         else:
             bar = st.progress(0.0, text="Generating…")
-            res = pg.generate_profile(state, rows, pg.parse_rules(red["rules"]), gen,
-                                      progress=lambda k, n: bar.progress(k / n, text=f"Incident {k + 1} of {n}…"))
+            res = pg.generate_profile(state, rows, pg.parse_rules(red["rules"]), gen, merges=merge_pairs,
+                                      progress=lambda k, n: bar.progress(k / n, text=f"Step {k + 1} of {n}…"))
             pdf = pg.render_pdf(res["profile"]) if res["ok"] else None
             store.add_profile(sid, pg.PROFILE_VERSION, res["ok"], reason.strip(), res["profile"], res["log"], pdf)
             st.rerun()
     if not profs:
         return
 
-    # ---------------- step 3: operator check
+    # ---------------- step 4: operator check
     latest = profs[0]
     log = latest["log"]
-    attempts = sum(len(i["attempts"]) for i in log["incidents"])
-    tok_in = sum(a.get("meta", {}).get("input_tokens", 0) for i in log["incidents"] for a in i["attempts"])
-    tok_out = sum(a.get("meta", {}).get("output_tokens", 0) for i in log["incidents"] for a in i["attempts"])
-    st.caption(f"{len(profs)} generation(s) logged · latest #{latest['id']} ({latest['reason']}) · "
-               f"{attempts} model call(s) for {len(log['incidents'])} incidents · tokens {tok_in:,} in / {tok_out:,} out")
+    attempts = sum(len(i["attempts"]) for i in log["incidents"]) + sum(len(p["attempts"]) for p in log.get("purposes", []))
+    calls = [a for i in log["incidents"] for a in i["attempts"]] + [a for p in log.get("purposes", []) for a in p["attempts"]]
+    tok_in = sum(a.get("meta", {}).get("input_tokens", 0) for a in calls)
+    tok_out = sum(a.get("meta", {}).get("output_tokens", 0) for a in calls)
+    st.caption(f"{len(profs)} generation(s) logged · latest #{latest['id']} ({latest['version']}, {latest['reason']}) · "
+               f"{attempts} model call(s) for {len(log['incidents'])} entries · tokens {tok_in:,} in / {tok_out:,} out")
+    if latest["version"] != pg.PROFILE_VERSION:
+        st.info(f"The latest profile was generated with {latest['version']}. Generate again to get {pg.PROFILE_VERSION}; "
+                "the older profile and its PDF stay stored.")
     if not latest["ok"]:
         st.error("The latest generation failed the checks for at least one incident after 3 attempts, so no PDF "
                  "was produced. Fix the cause (usually a missing redaction rule) and generate again.")
         for i in log["incidents"]:
             if not i["passed"]:
-                st.markdown(f"**{i['id']}**")
+                st.markdown(f"**{' + '.join(i.get('members') or [i['id']])}**")
                 for a in i["attempts"]:
                     st.write(a.get("error") or a.get("fails"))
         return
 
-    st.markdown("**Step 3 · Check every entry against the answers** (never edit by hand; regenerate instead)")
+    st.markdown("**Step 4 · Check every entry against the answers** (never edit by hand; regenerate instead)")
     prof = latest["profile"]
-    for d in pg.DIMENSIONS:
-        for x in prof["themes"][d]:
-            with st.expander(f"{x['id']} · {pg.HEADINGS[d]} · {x['headline']}"):
-                c1, c2 = st.columns(2)
-                c1.markdown("**Answers (after redaction)**")
-                for e in x["source"]:
-                    c1.markdown(f"> {e['answer']}")
-                c2.markdown(f"**{x['headline']}**  \n{x['role']}")
-                c2.markdown(f"Situation: {x['situation']}  \nResult: {x['result']}")
-                for ev in x.get("label_evidence", []):
-                    c2.caption(f"Label {ev['name']}: “{ev['quote']}”")
-                for ev in x.get("tag_evidence", []):
-                    c2.caption(f"Tag {ev['name']}: “{ev['quote']}”")
-                if x.get("tools"):
-                    c2.caption("Tools: " + ", ".join(x["tools"]))
-                for w in x.get("warnings", []):
-                    c2.warning(w)
-    approved = st.checkbox("I checked every entry against the answers. Nothing is added, every label and tag meets "
-                           "its coding rule, no personal name appears.",
+    if "entries" in prof:
+        _check_v2(prof, log)
+    else:
+        _check_v1(prof)
+    approved = st.checkbox("I checked every entry and purpose line against the answers. Nothing is added, every "
+                           "label and tag meets its coding rule, no personal name appears.",
                            value=bool(latest["approved"]), key=f"appr_{sid}_{latest['id']}")
     if approved != bool(latest["approved"]):
         store.approve_profile(latest["id"], approved)
         st.rerun()
 
-    # ---------------- step 4: output
-    st.markdown("**Step 4 · Output**")
+    # ---------------- step 5: output
+    st.markdown("**Step 5 · Output**")
     for k, png in enumerate(_preview_pngs(latest["pdf"]), 1):
         st.image(png, caption=f"Profile page {k}", width="stretch")
     c1, c2, c3 = st.columns(3)

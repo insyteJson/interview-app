@@ -142,9 +142,10 @@ def test_admin_profile_flow(tmp_path, monkeypatch):
     at.button(key="redsave_P01").click().run()
     assert not at.exception
     assert not at.button(key="gen_P01").disabled
+    assert all(b.key != "mergesave_P01" for b in at.button)   # one incident: no pair to review (resume-v2)
     at.button(key="gen_P01").click().run()
     assert not at.exception, at.exception
-    assert len(fake.calls) == 1
+    assert len(fake.entry_calls()) == 1 and len(fake.calls) == 2   # one entry, one purpose line
     prof = store.list_profiles("P01")[0]
     assert prof["ok"] and prof["pdf"] and not prof["approved"]
     at.checkbox(key=f"appr_P01_{prof['id']}").check().run()
@@ -161,3 +162,44 @@ def test_consent_version_is_read_from_the_shown_text():
     assert cv("*Version 3.1 (app version, DRAFT)*") == "3.1"
     assert cv("*Version 3.1*\n **[CONFIRM: x]**") == "3.1-draft"
     assert cv("no header") == "unknown"
+
+
+def test_admin_merge_step_gates_generation(tmp_path, monkeypatch):
+    import streamlit as st
+    from storage import Store
+    sys.path.insert(0, os.path.join(APP_DIR, "tests"))
+    import test_profile as tp
+    import profile_gen as pg
+
+    st.cache_resource.clear()
+    url = f"sqlite:///{tmp_path}/m.db"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.chdir(APP_DIR)
+    store = Store(url)
+    state = dict(tp.P01_STATE, turn=8, pos_idx=3, phase="done", dimension=None, level=None, model="m",
+                 prompt_version="t")
+    base = {"rule": "r", "phase_before": "prompt", "meta": None, "accepted": 0, "declined": 0, "audit": "",
+            "audit_note": ""}
+    store.create_session("P01", state, dict(base, turn=0, answer_raw="", question_shown="start", qid="Q_ROLES",
+                                             classification=None))
+    for k, t in enumerate(tp._p01_turns(), start=1):
+        store.save_turn("P01", k, state, dict(base, turn=t["turn"], answer_raw=t["answer_raw"],
+                                              question_shown=t["question_shown"], qid=t["qid"],
+                                              classification=t["classification"]))
+    store.save_redaction("P01", "")
+
+    at = AppTest.from_file(os.path.join(APP_DIR, "app.py"), default_timeout=60)
+    at.query_params["admin"] = "1"
+    at.session_state["_generator_override"] = lambda: pg.ProfileGenerator("k", "m", client=tp.FakeClient([]))
+    at.run()
+    at.text_input(key="admin_pw").input("pw").run()
+    assert not at.exception
+    assert at.button(key="gen_P01").disabled                  # merge decisions not saved yet
+    at.checkbox(key="dup_P01_i01_i02").check().run()
+    at.button(key="mergesave_P01").click().run()
+    assert not at.exception
+    assert store.get_merges("P01")["pairs"] == [["i01", "i02"]]
+    assert not at.button(key="gen_P01").disabled
+    st.cache_resource.clear()

@@ -77,6 +77,15 @@ profiles = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# resume-v2: researcher decisions on which incidents describe the same event (pairs of incident ids).
+# Created automatically on the next start (create_all adds missing tables, existing ones are untouched).
+merges = Table(
+    "merges", metadata,
+    Column("session_id", String(40), primary_key=True),
+    Column("pairs", JSON, nullable=False),
+    Column("confirmed_at", DateTime(timezone=True), nullable=False),
+)
+
 
 class ConflictError(RuntimeError):
     """The session changed since it was loaded (second tab or double submit)."""
@@ -159,6 +168,16 @@ class Store:
     def get_redaction(self, sid: str) -> dict | None:
         with self.engine.connect() as c:
             row = c.execute(select(redactions).where(redactions.c.session_id == sid)).mappings().first()
+        return dict(row) if row else None
+
+    def save_merges(self, sid: str, pairs: list[list[str]]) -> None:
+        with self.engine.begin() as c:
+            c.execute(merges.delete().where(merges.c.session_id == sid))
+            c.execute(insert(merges).values(session_id=sid, pairs=[sorted(p) for p in pairs], confirmed_at=_now()))
+
+    def get_merges(self, sid: str) -> dict | None:
+        with self.engine.connect() as c:
+            row = c.execute(select(merges).where(merges.c.session_id == sid)).mappings().first()
         return dict(row) if row else None
 
     def add_profile(self, sid: str, version: str, ok: bool, reason: str, profile: dict, log: dict,

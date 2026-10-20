@@ -139,7 +139,7 @@ Addresses, dates of birth and unlisted employers or school names are NOT detecte
 (re-reads the result for every listed term) and the manual check catch them. A name that is split over two lines may not be
 matched. Treat the automatic step as an aid, never as the guarantee. PyMuPDF is AGPL-licensed.
 
-## Behavioural resume for recruiters (`profile_gen.py`, `profile_ui.py`, version `resume-v1`)
+## Behavioural resume for recruiters (`profile_gen.py`, `profile_ui.py`, version `resume-v2`)
 
 Interview additions: the role form (engine `app-v3`, 20.10.2026) replaces the free-text listing, the list
 confirmation and the paid-status question of `app-v2`. Fields per category:
@@ -156,14 +156,22 @@ and for activities outside work). The resume shows the category next to each rol
 In `?admin=1`, for every completed session:
 1. **Remove personal names** with replacement rules (`find => replacement`). Company names, titles, places and
    achievements stay (decided 18.10.2026).
-2. **Generate.** One model call per incident: headline (<= 12 words), situation and result (<= 35 words each), up to
+2. **Same event told twice** (resume-v2). Pairs of incidents from the same role are listed with their content
+   overlap (pairs at 40 % or more are marked "likely"). Tick the pairs that describe the same event and save (also
+   when nothing is ticked); generation stays disabled until the decisions are saved. Stored in table `merges`.
+3. **Generate.** One model call per incident or merged event: headline (<= 12 words), situation and result (<= 35 words each), up to
    two competency labels (Bartram 2005 factor names, coding agenda v1), circumstance tags, tools named in the
    incident, personal names still present. Code checks every entry (word limits, numbers, verbatim evidence quote
    for every label and tag, tools must appear in the answers, no redacted or reported personal names) and
    regenerates on failure (max. 3 attempts, logged).
-3. **Check** each entry against the answers (side by side, with the evidence quotes). No hand-editing.
-4. **Download** the PDF: Roles covered (company, period, stated tools) next to Behaviour shown (label counts), then
-   the three themes ("Doing the work", "Standing by standards", "Helping others") with headline, role, labels (blue),
+   Plus one call per role that restates the aim answer as a purpose line (<= 15 words, >= 60 % of its content
+   words from the answer, no numbers or names that are not in it; 3 attempts, then the line is left out).
+4. **Check** each entry against the answers (side by side, with the evidence quotes). No hand-editing.
+5. **Download** the PDF (resume-v2): a role x theme matrix (company, category, period, purpose, tools; situations per
+   theme; roles with at least one situation), the labels by reach ("in more than one role" / "in one role only"), then
+   the three themes; a merged event is shown in full under its first theme and cross-listed under the other. Entries
+   sharing a label that recurs across roles sit next to each other. Older resume-v1 profiles stay stored with their
+   PDF. Then the three themes ("Doing the work", "Standing by standards", "Helping others") with headline, role, labels (blue),
    circumstance tags (amber), tools (grey), situation and result. Aims, reflections, prompt levels and JSON are not
    shown. Packet (resume + blacked-out CV) once approved.
 
