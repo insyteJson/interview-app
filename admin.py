@@ -1,0 +1,138 @@
+"""Researcher view: sessions, incidents, turn log with audit marks, exports."""
+
+from __future__ import annotations
+
+import hmac
+import io
+
+import pandas as pd
+import streamlit as st
+
+AUDIT_OPTIONS = ["", "ok", "deviation"]
+
+
+def _check_password(expected: str | None) -> bool:
+    if not expected:
+        st.error("ADMIN_PASSWORD is not configured.")
+        return False
+    if st.session_state.get("admin_ok"):
+        return True
+    pw = st.text_input("Researcher password", type="password", key="admin_pw")
+    if pw and hmac.compare_digest(pw, str(expected)):
+        st.session_state["admin_ok"] = True
+        st.rerun()
+    elif pw:
+        st.error("Wrong password.")
+    return False
+
+
+def render_admin(store, admin_password: str | None, make_generator=lambda: None) -> None:
+    st.title("Interview sessions")
+    if not _check_password(admin_password):
+        return
+
+    all_sessions = store.list_sessions()
+    if not all_sessions:
+        st.info("No sessions yet. A session appears once a participant has opened their link and agreed to take part.")
+        return
+
+    overview = pd.DataFrame([{
+        "code": s["id"], "status": s["status"], "turns": s["state"].get("turn"),
+        "positions": len(s["state"].get("positions") or []), "incidents": len(s["state"].get("incidents") or []),
+        "started": s["created_at"], "last activity": s["updated_at"],
+    } for s in all_sessions])
+    st.dataframe(overview, hide_index=True, width="stretch")
+
+    sid = st.selectbox("Session", [s["id"] for s in all_sessions], key="admin_sid")
+    sess = store.get_session(sid)
+    state = sess["state"]
+    rows = store.get_turns(sid)
+
+    # ---- state summary
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Status", state["status"])
+    c2.metric("Turn", state["turn"])
+    pos = state["positions"][state["pos_idx"]] if state["positions"] and state["pos_idx"] < len(state["positions"]) else None
+    c3.metric("Position", f"{state['pos_idx'] + 1}/{len(state['positions'])}" if pos else "-")
+    c4.metric("Phase", state["phase"])
+    st.caption(f"Model: {state.get('model')} · prompt version: {state.get('prompt_version')} · "
+               f"dimension: {state.get('dimension')} · level: {state.get('level')}")
+
+    tokens_in = sum((r["meta"] or {}).get("input_tokens", 0) or 0 for r in rows)
+    tokens_out = sum((r["meta"] or {}).get("output_tokens", 0) or 0 for r in rows)
+    st.caption(f"Tokens so far: {tokens_in:,} in / {tokens_out:,} out")
+
+    # ---- positions and incidents
+    st.subheader("Positions")
+    st.dataframe(pd.DataFrame(state["positions"]) if state["positions"] else pd.DataFrame(),
+                 hide_index=True, width="stretch")
+
+    st.subheader("Accepted incidents")
+    if state["incidents"]:
+        st.dataframe(pd.DataFrame(state["incidents"]), hide_index=True, width="stretch")
+    else:
+        st.caption("None yet.")
+
+    # ---- turn log with audit
+    st.subheader("Turn log and audit")
+    df = pd.DataFrame([{
+        "id": r["id"], "turn": r["turn"], "phase": r["phase_before"],
+        "answer": r["answer_raw"], "label": (r["classification"] or {}).get("label"),
+        "rationale": (r["classification"] or {}).get("rationale"),
+        "rule": r["rule"], "question shown": r["question_shown"],
+        "audit": r["audit"] or "", "note": r["audit_note"] or "",
+    } for r in rows])
+    edited = st.data_editor(
+        df, hide_index=True, width="stretch", key=f"editor_{sid}",
+        disabled=[c for c in df.columns if c not in ("audit", "note")],
+        column_config={
+            "id": None,
+            "audit": st.column_config.SelectboxColumn("audit", options=AUDIT_OPTIONS),
+            "answer": st.column_config.TextColumn(width="medium"),
+            "question shown": st.column_config.TextColumn(width="medium"),
+        },
+    )
+    if st.button("Save audit marks"):
+        changed = 0
+        for (_, old), (_, new) in zip(df.iterrows(), edited.iterrows()):
+            if old["audit"] != new["audit"] or old["note"] != new["note"]:
+                store.set_audit(int(new["id"]), new["audit"] or "", new["note"] or "")
+                changed += 1
+        st.success(f"Saved {changed} change(s).")
+
+    audited = edited[edited["audit"].isin(["ok", "deviation"])]
+    if len(audited):
+        dev = int((audited["audit"] == "deviation").sum())
+        st.metric("Protocol adherence (audited turns)", f"{100 * (len(audited) - dev) / len(audited):.0f}%",
+                  help=f"{len(audited)} audited, {dev} deviation(s)")
+
+    # ---- exports
+    st.subheader("Export")
+    st.download_button("Session as JSON", store.export_session(sid), file_name=f"session-{sid}.json",
+                       mime="application/json")
+    buf = io.StringIO()
+    df.drop(columns=["id"]).to_csv(buf, index=False)
+    st.download_button("Turn log as CSV", buf.getvalue(), file_name=f"turns-{sid}.csv", mime="text/csv")
+    if state["incidents"]:
+        buf2 = io.StringIO()
+        pd.DataFrame(state["incidents"]).to_csv(buf2, index=False)
+        st.download_button("Incidents as CSV", buf2.getvalue(), file_name=f"incidents-{sid}.csv", mime="text/csv")
+
+    # ---- anonymised CV
+    st.subheader("Anonymised CV")
+    cvrow = store.get_cv(sid)
+    if not cvrow:
+        st.caption("No CV submitted yet.")
+    else:
+        st.write(cvrow["report"])
+        st.download_button("Download anonymised CV (PDF)", cvrow["pdf"], file_name=f"cv-{sid}.pdf", mime="application/pdf")
+        checked = st.checkbox("I checked this CV by hand (nothing identifying left)", value=bool(cvrow["checked"]),
+                              key=f"cv_checked_{sid}")
+        if checked != bool(cvrow["checked"]):
+            store.mark_cv_checked(sid, checked)
+            st.rerun()
+
+    # ---- profile for recruiters
+    st.divider()
+    from profile_ui import render_profile_section
+    render_profile_section(store, sid, state, rows, make_generator)
