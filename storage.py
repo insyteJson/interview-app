@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from sqlalchemy import (JSON, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text, UniqueConstraint,
                         create_engine, insert, select, update)
 
+# Bump whenever a table or a Store method is added: app.py keys its cached Store on this value, so a redeploy
+# builds a fresh Store (and creates new tables) instead of reusing one created by the previous code.
+SCHEMA_VERSION = "2026-10-20.resume-v2"
+
 metadata = MetaData()
 
 sessions = Table(

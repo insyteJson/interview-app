@@ -30,7 +30,7 @@ import engine  # noqa: E402
 import roles  # noqa: E402
 import roles_ui  # noqa: E402
 from classifier import Classifier, ClassifierError  # noqa: E402
-from storage import ConflictError, Store  # noqa: E402
+from storage import SCHEMA_VERSION, ConflictError, Store  # noqa: E402
 
 
 # ------------------------------------------------------------------ config
@@ -51,7 +51,8 @@ EFFORT = str(cfg("EFFORT", "medium")).strip().lower() or "medium"
 
 
 @st.cache_resource(show_spinner="Loading the interview…")
-def get_store() -> Store:
+def get_store(schema_version: str) -> Store:
+    """Cached per schema version: after a code update that changes storage, a new Store is built."""
     return Store(cfg("DATABASE_URL", "sqlite:///interviews.db"))
 
 
@@ -76,7 +77,7 @@ def consent_version(text: str) -> str:
 
 
 try:
-    store = get_store()
+    store = get_store(SCHEMA_VERSION)
 except Exception:  # database unreachable or misconfigured: log details, show participants nothing technical
     logging.getLogger("interview").exception("Database connection failed")
     _boot.empty()

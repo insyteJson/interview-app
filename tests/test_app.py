@@ -157,7 +157,7 @@ def test_admin_profile_flow(tmp_path, monkeypatch):
 def test_consent_version_is_read_from_the_shown_text():
     src = open(os.path.join(APP_DIR, "app.py"), encoding="utf-8").read()
     ns = {"re": __import__("re")}
-    exec(src[src.index("def consent_version"):src.index("try:\n    store = get_store()")], ns)
+    exec(src[src.index("def consent_version"):src.index("try:\n    store = get_store(")], ns)
     cv = ns["consent_version"]
     assert cv("*Version 3.1 (app version, DRAFT)*") == "3.1"
     assert cv("*Version 3.1*\n **[CONFIRM: x]**") == "3.1-draft"
