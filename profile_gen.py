@@ -81,7 +81,7 @@ INPUT: a JSON object with the role and the exchange that describes ONE incident:
 the candidate's answers, in order. The answers may contain dictation errors and fillers.
 
 OUTPUT FIELDS
-- headline: at most 12 words. Starts with a past-tense verb and restates the action the candidate took. Never a
+- headline: at most 12 words (aim for 10 or fewer). Starts with a past-tense verb and restates the action the candidate took. Never a
   trait, never an evaluation. Example: "Brought deployment pipeline and documentation in-house from a contractor".
 - situation: one or two short sentences, at most 35 words: the circumstances that led to the action.
 - result: one or two short sentences, at most 35 words: what happened or changed afterwards. If the candidate only
@@ -238,6 +238,19 @@ def _evidence_ok(name: str, evidence: list[dict], src_n: str) -> bool:
                for e in evidence)
 
 
+def tool_in_source(tool: str, src_n: str) -> bool:
+    """A tool counts as stated if it occurs verbatim, or if every word of it occurs with the same five-letter stem
+    (so 'joint mobilisation' matches 'mobilization of the joint', 'scar massage' matches 'massaged the scar')."""
+    t = _norm(tool)
+    if not t:
+        return False
+    if t in src_n:
+        return True
+    stems = {w[:5] for w in src_n.split()}
+    words = [w for w in t.split() if len(w) > 2]
+    return bool(words) and all(w[:5] in stems for w in words)
+
+
 def check_entry(entry: dict, source: str, rules: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
     """Returns (hard failures, warnings)."""
     fails, warns = [], []
@@ -259,9 +272,13 @@ def check_entry(entry: dict, source: str, rules: list[tuple[str, str]]) -> tuple
     for tag in entry.get("tags", []):
         if not _evidence_ok(tag, entry.get("tag_evidence", []), src_n):
             fails.append(f"tag '{tag}' has no verbatim evidence quote from the answers")
+    kept = []
     for tool in entry.get("tools", []):
-        if _norm(tool) and _norm(tool) not in src_n:
-            fails.append(f"tool '{tool}' does not appear in the answers")
+        if tool_in_source(tool, src_n):
+            kept.append(tool)
+        else:  # tools are display only: an unverifiable tool is dropped, it never blocks the entry
+            warns.append(f"tool '{tool}' was dropped: not found in the answers")
+    entry["tools"] = kept
     for find, _ in rules:
         if re.search(r"(?<!\w)" + re.escape(find) + r"(?!\w)", written, flags=re.I):
             fails.append(f"redacted name '{find}' appears in the text")
@@ -486,7 +503,8 @@ def _generate_purpose(p: dict, rules, generator: ProfileGenerator) -> tuple[str 
             purpose = purpose[0].upper() + purpose[1:]
             log["purpose"], log["warnings"] = purpose, warns
             return purpose, log
-        feedback = "\n".join("- " + f for f in fails)
+        feedback = "\n".join([f"Your previous purpose was: {purpose!r}", "It failed these checks:"]
+                              + ["- " + f for f in fails])
     log["skipped"] = "failed the checks after 3 attempts; no purpose line is shown"
     return None, log
 
@@ -529,6 +547,17 @@ def order_entries(entries: list[dict], stats: list[dict]) -> list[dict]:
     return sorted(entries, key=key)
 
 
+def retry_feedback(entry: dict, fails: list[str]) -> str:
+    """Each call is stateless, so the next attempt must see what failed, not only the rule it broke."""
+    shown = {k: entry.get(k) for k in ("headline", "situation", "result", "labels", "tags", "tools")}
+    lines = ["Your previous entry was:", json.dumps(shown, ensure_ascii=False), "It failed these checks:"]
+    lines += ["- " + f for f in fails]
+    if any(f.startswith(("headline has", "situation has", "result has")) for f in fails):
+        lines.append("Shorten the field that is too long: count the words (a hyphenated word counts as one) and "
+                     f"stay clearly below the limit, e.g. a headline of {MAX_HEADLINE - 3} words or fewer.")
+    return "\n".join(lines)
+
+
 def generate_profile(state: dict, turns: list[dict], rules: list[tuple[str, str]], generator: ProfileGenerator,
                      progress=None, merges=None) -> dict:
     """Builds the full resume. `merges` are the researcher-confirmed pairs of incident ids that describe the same
@@ -569,7 +598,7 @@ def generate_profile(state: dict, turns: list[dict], rules: list[tuple[str, str]
             if not fails:
                 accepted = entry | {"warnings": warns}
                 break
-            feedback = "\n".join("- " + f for f in fails)
+            feedback = retry_feedback(entry, fails)
         log["incidents"].append({"id": first["id"], "members": [i["id"] for i in group],
                                  "turn_accepted": first["turn_accepted"], "attempts": attempts,
                                  "passed": accepted is not None})

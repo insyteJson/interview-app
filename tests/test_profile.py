@@ -74,9 +74,25 @@ def test_checks_catch_each_failure():
     text = " | ".join(fails)
     for expected in ("headline has 13 words", "result has 36 words", "number '3'", "3 labels",
                      "label 'Leading & Deciding' has no verbatim evidence", "tag 'Under time pressure' has no verbatim",
-                     "tool 'Excel' does not appear", "redacted name 'Anna'", "personal names still in the answers"):
+                     "redacted name 'Anna'", "personal names still in the answers"):
         assert expected in text, expected
-    assert warns == ["evaluative word 'excellently' is not in the answers"] or not warns
+    assert "Excel" not in text and bad["tools"] == []                       # tools never block an entry
+    assert "tool 'Excel' was dropped: not found in the answers" in warns
+
+
+def test_tools_match_spelling_variants_and_word_forms():
+    src = pg._norm("I did a mobilization of the joint and massaged the scar, then used Power BI")
+    assert pg.tool_in_source("joint mobilisation", src) and pg.tool_in_source("scar massage", src)
+    assert pg.tool_in_source("Power BI", src) and not pg.tool_in_source("ultrasound therapy", src)
+
+
+def test_retry_shows_the_failed_attempt():
+    fake = FakeClient([dict(GOOD, headline=" ".join(["word"] * 13)), GOOD])
+    res = pg.generate_profile(STATE, TURNS, RULES, pg.ProfileGenerator("k", "m", client=fake))
+    assert res["ok"]
+    retry = fake.entry_calls()[1]["messages"][0]["content"]
+    assert "Your previous entry was:" in retry and "word word word" in retry and "headline has 13 words" in retry
+    assert "9 words or fewer" in retry
 
 
 class FakeClient:
