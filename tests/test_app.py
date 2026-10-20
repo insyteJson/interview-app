@@ -203,3 +203,33 @@ def test_admin_merge_step_gates_generation(tmp_path, monkeypatch):
     assert store.get_merges("P01")["pairs"] == [["i01", "i02"]]
     assert not at.button(key="gen_P01").disabled
     st.cache_resource.clear()
+
+
+def test_completed_interview_shows_cv_step_first(tmp_path, monkeypatch):
+    """Regression: Streamlit jumps to the top when the chat box disappears, so the CV step must be at the top."""
+    import streamlit as st
+    st.cache_resource.clear()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/c.db")
+    monkeypatch.setenv("ALLOWED_CODES", "P09")
+    monkeypatch.chdir(APP_DIR)
+    fake = FakeClassifier([{"label": "ANSWER"}, {"label": "ANSWER", "tools": []}] + [{"label": "DECLINE"}] * 3)
+    at = AppTest.from_file(os.path.join(APP_DIR, "app.py"), default_timeout=30)
+    at.query_params["code"] = "P09"
+    at.session_state["_classifier_override"] = fake
+    at.run()
+    for k in ("consent_1", "consent_2", "consent_3", "consent_4"):
+        at.checkbox(key=k).check()
+    at.button[0].click().run()
+    at.button(key="rf_add_hobby").click().run()
+    at.button(key="rf_0_rm").click().run()
+    at.text_input(key="rf_1_title").input("Runner")
+    at.button(key="rf_submit").click().run()
+    for answer in ("fit", "shoes", "no", "no", "no"):
+        at.chat_input[0].set_value(answer).run()
+    assert not at.exception, at.exception
+    assert not at.chat_input
+    assert "One last step" in at.success[0].value
+    assert at.subheader[0].value == "Last step: your CV"
+    assert at.expander and "interview answers" in at.expander[0].label
+    assert engine.CLOSE_COMPLETE in [m.markdown[0].value for m in at.expander[0].chat_message if m.markdown][-1]
+    st.cache_resource.clear()

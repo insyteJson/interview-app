@@ -163,21 +163,28 @@ if sess is None:
         st.rerun()
     st.stop()
 
-# --- conversation so far
-for row in store.get_turns(code):
-    if row["turn"] > 0:
-        with st.chat_message("user"):
-            st.markdown(row["answer_raw"])
-    with st.chat_message("assistant"):
-        st.markdown(row["question_shown"].replace("\n- ", "\n\n- ") if row["turn"] == 0 else row["question_shown"])
-
 state = sess["state"]
+
+
+def show_transcript() -> None:
+    for row in store.get_turns(code):
+        if row["turn"] > 0:
+            with st.chat_message("user"):
+                st.markdown(row["answer_raw"])
+        with st.chat_message("assistant"):
+            st.markdown(row["question_shown"].replace("\n- ", "\n\n- ") if row["turn"] == 0 else row["question_shown"])
+
+
+# --- conversation so far (once complete, it moves into an expander below the CV step)
+if state["status"] != "complete":
+    show_transcript()
 if state["status"] == "aborted":
     st.stop()
 
 
-def cv_step() -> None:
-    st.divider()
+def cv_step(first: bool = False) -> None:
+    if not first:
+        st.divider()
     st.subheader("Last step: your CV")
     saved = store.get_cv(code)
     if saved:
@@ -230,8 +237,16 @@ def cv_step() -> None:
         st.rerun()
 
 
+
+# --- interview finished: the CV step comes first. Streamlit jumps to the top of the page when the chat box
+# disappears, so a CV step below a long transcript was never seen (two sessions completed without a CV).
 if state["status"] == "complete":
-    cv_step()
+    if not store.get_cv(code):
+        st.success("**The interview questions are complete. One last step: please upload your CV below.** "
+                   "Your participation is finished once your CV has been submitted.")
+    cv_step(first=True)
+    with st.expander("Your interview answers (for reference)"):
+        show_transcript()
     st.stop()
 
 # --- role form (first step after consent; no model involved)

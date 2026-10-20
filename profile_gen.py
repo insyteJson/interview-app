@@ -609,6 +609,7 @@ def generate_profile(state: dict, turns: list[dict], rules: list[tuple[str, str]
 # ------------------------------------------------------------------ rendering
 
 CSS = """
+/* No background colours inside tables: MuPDF Story repaints table-cell backgrounds on every later page. */
 * { font-family: sans-serif; }
 body { font-size: 9pt; color: #1b1f24; line-height: 1.3; }
 h1 { font-size: 19pt; margin: 0; }
@@ -618,21 +619,21 @@ h2 { font-size: 10.5pt; margin: 9pt 0 1pt 0; }
 table.mx { width: 100%; border-collapse: collapse; }
 table.mx th { font-size: 7.8pt; color: #57606a; text-align: center; padding: 2pt 6pt; font-weight: bold; }
 table.mx th.rl { text-align: left; }
-table.mx td { border: 1.5pt solid #ffffff; padding: 3pt 5pt; vertical-align: middle; }
-td.role { background-color: #f3f4f6; font-size: 8.6pt; }
+table.mx td { border-bottom: 0.6pt solid #d0d7de; padding: 3pt 5pt; vertical-align: middle; }
+td.role { font-size: 8.6pt; }
 td.role b { font-weight: bold; }
 .rsub { font-size: 7.8pt; color: #57606a; }
-td.c0 { background-color: #f3f4f6; color: #6e7781; text-align: center; }
-td.c1 { background-color: #dde8f6; text-align: center; font-weight: bold; }
-td.c2 { background-color: #b7cdec; text-align: center; font-weight: bold; }
+td.c0 { color: #8c959f; text-align: center; }
+td.c1 { color: #1f5fa8; text-align: center; font-weight: bold; font-size: 10pt; }
+td.c2 { color: #0b3d7a; text-align: center; font-weight: bold; font-size: 11pt; }
 td.sum { text-align: center; font-weight: bold; font-size: 8.4pt; }
 td.suml { font-weight: bold; font-size: 8.4pt; }
 table.ls { width: 100%; border-collapse: collapse; }
 table.ls td { vertical-align: top; width: 50%; padding: 0 6pt 0 0; }
 .lsh { font-size: 7.6pt; color: #57606a; font-weight: bold; text-transform: uppercase; letter-spacing: 0.6pt;
        margin: 2pt 0 2pt 0; }
-.lsm { background-color: #e6eef9; color: #163a69; margin: 0 0 2pt 0; padding: 2pt 5pt; font-size: 8.4pt; }
-.lss { background-color: #f3f4f6; color: #333333; margin: 0 0 2pt 0; padding: 2pt 5pt; font-size: 8.4pt; }
+.lsm { color: #163a69; margin: 0 0 2pt 0; padding: 0; font-size: 8.4pt; }
+.lss { color: #333333; margin: 0 0 2pt 0; padding: 0; font-size: 8.4pt; }
 .lsn { font-size: 8.2pt; color: #6e7781; margin: 0; }
 h3 { font-size: 11.5pt; color: #1b1f24; margin: 9pt 0 0 0; border-bottom: 1px solid #c9d3df; padding-bottom: 2pt; }
 .th-sub { font-size: 8pt; color: #57606a; margin: 1pt 0 2pt 0; }
