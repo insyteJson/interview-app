@@ -22,6 +22,7 @@ researcher ──> ?admin=1  (password)  turn log, audit marks, adherence rate, 
 | `storage.py` | SQLite locally, Postgres (e.g. Supabase) in production; optimistic locking per turn |
 | `app.py` | Participant chat (`?code=P01`) and routing to the researcher view (`?admin=1`) |
 | `admin.py` | Sessions, positions, accepted incidents, turn log with audit dropdown, exports |
+| `rating.py` | Candidate questionnaire (DO2) on a separate link `?rate=P01`: document left, click-only questions right, counterbalanced by code, saved per step; answers in the researcher view and as CSV |
 | `consent.md` | **Placeholder. Replace with your consent text before sending links.** |
 | `replay.py` | Runs a text file of answers through the real classifier and engine, no database |
 | `tests/` | 15 tests: the decision table and an end-to-end app run with a fake classifier |

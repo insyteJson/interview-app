@@ -136,3 +136,53 @@ def render_admin(store, admin_password: str | None, make_generator=lambda: None)
     st.divider()
     from profile_ui import render_profile_section
     render_profile_section(store, sid, state, rows, make_generator)
+
+    # ---- candidate questionnaire
+    st.divider()
+    render_rating_section(store, sid)
+
+
+def ratings_table(store) -> pd.DataFrame:
+    """One row per participant, one column per answer: the input for the DO2 analysis."""
+    import rating as rt
+    out = []
+    for r in store.list_ratings():
+        row = {"code": r["session_id"], "instrument": r["instrument"], "order": r["doc_order"],
+               "profile_id": r["profile_id"], "status": r["status"], "started": r["started_at"],
+               "completed": r["completed_at"]}
+        for s in rt.screens(r["doc_order"]):
+            for it in rt.items(s):
+                k = rt.answer_key(s, it[0])
+                row[k] = (r["answers"] or {}).get(k)
+            row[f"sec_{rt.screen_id(s)}"] = ((r["screens"] or {}).get(rt.screen_id(s)) or {}).get("seconds")
+        out.append(row)
+    return pd.DataFrame(out)
+
+
+def render_rating_section(store, sid: str) -> None:
+    import rating as rt
+    st.subheader("Candidate questionnaire")
+    ready = bool(store.get_approved_profile(sid) and store.get_cv(sid))
+    st.markdown(f"Link to send: `?rate={sid}` · order for this code: **{rt.doc_order(sid)}**")
+    if not ready:
+        st.caption("The link opens the questionnaire once this session has an approved profile and a CV. "
+                   "Until then the participant sees 'not ready yet'.")
+    r = store.get_rating(sid)
+    if not r:
+        st.caption("Not started.")
+    else:
+        sc = rt.screens(r["doc_order"])
+        st.caption(f"Status: {r['status']} · {len(r['screens'] or {})} of {len(sc)} steps saved · "
+                   f"rated profile #{r['profile_id']} · started {r['started_at']:%d.%m.%Y %H:%M} UTC")
+        st.dataframe(pd.DataFrame([{"answer": k, "value": str(v)} for k, v in (r["answers"] or {}).items()]),
+                     hide_index=True, width="stretch")
+        if st.checkbox("Delete this participant's questionnaire answers (withdrawal or test run)", key=f"rdel_{sid}"):
+            if st.button("Delete answers", key=f"rdelb_{sid}"):
+                store.delete_rating(sid)
+                st.rerun()
+    table = ratings_table(store)
+    if len(table):
+        buf = io.StringIO()
+        table.to_csv(buf, index=False)
+        st.download_button("All questionnaires as CSV (one row per participant)", buf.getvalue(),
+                           file_name="questionnaires.csv", mime="text/csv", key="rcsv")

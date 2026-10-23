@@ -1,6 +1,7 @@
 """Participant interview app (Streamlit).
 
 Participant link:  https://<your-app>/?code=P01
+Questionnaire:     https://<your-app>/?rate=P01   (send only once the profile is approved)
 Researcher view:   https://<your-app>/?admin=1
 """
 
@@ -98,6 +99,14 @@ if st.query_params.get("admin"):
         from profile_gen import ProfileGenerator
         return ProfileGenerator(api_key=key, model=MODEL, effort=EFFORT)
     render_admin(store, cfg("ADMIN_PASSWORD"), st.session_state.get("_generator_override") or make_generator)
+    st.stop()
+
+
+# ------------------------------------------------------------------ questionnaire route (separate link, ?rate=P01)
+
+if st.query_params.get("rate"):
+    from rating import render_rating
+    render_rating(store, st.query_params.get("rate"), ALLOWED_CODES)
     st.stop()
 
 

@@ -14,7 +14,7 @@ from sqlalchemy import (JSON, Column, DateTime, Integer, LargeBinary, MetaData, 
 
 # Bump whenever a table or a Store method is added: app.py keys its cached Store on this value, so a redeploy
 # builds a fresh Store (and creates new tables) instead of reusing one created by the previous code.
-SCHEMA_VERSION = "2026-10-20.resume-v2"
+SCHEMA_VERSION = "2026-10-23.rating-v1"
 
 metadata = MetaData()
 
@@ -88,6 +88,23 @@ merges = Table(
     Column("session_id", String(40), primary_key=True),
     Column("pairs", JSON, nullable=False),
     Column("confirmed_at", DateTime(timezone=True), nullable=False),
+)
+
+
+# rating-v1: the candidate questionnaire (DO2), opened through a separate link (?rate=P01) once the profile is
+# approved. One row per participant; answers are merged in screen by screen, so a participant can resume.
+ratings = Table(
+    "ratings", metadata,
+    Column("session_id", String(40), primary_key=True),
+    Column("instrument", String(40), nullable=False),
+    Column("doc_order", String(20), nullable=False),          # "profile-first" | "cv-first"
+    Column("profile_id", Integer, nullable=False),             # the approved profile that was shown
+    Column("status", String(20), nullable=False),              # "in_progress" | "complete"
+    Column("answers", JSON, nullable=False),
+    Column("screens", JSON, nullable=False),                   # screen id -> {"seconds": .., "at": ..}
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -200,6 +217,66 @@ class Store:
     def approve_profile(self, pid: int, approved: bool) -> None:
         with self.engine.begin() as c:
             c.execute(update(profiles).where(profiles.c.id == pid).values(approved=int(approved)))
+
+    def get_approved_profile(self, sid: str) -> dict | None:
+        """Newest approved profile that has a PDF (the one a candidate rates and recruiters receive)."""
+        with self.engine.connect() as c:
+            row = c.execute(select(profiles).where(profiles.c.session_id == sid, profiles.c.approved == 1,
+                                                   profiles.c.ok == 1, profiles.c.pdf.is_not(None))
+                            .order_by(profiles.c.id.desc())).mappings().first()
+        return dict(row) if row else None
+
+    def get_profile(self, pid: int) -> dict | None:
+        with self.engine.connect() as c:
+            row = c.execute(select(profiles).where(profiles.c.id == pid)).mappings().first()
+        return dict(row) if row else None
+
+    # ---- candidate questionnaire
+    def get_rating(self, sid: str) -> dict | None:
+        with self.engine.connect() as c:
+            row = c.execute(select(ratings).where(ratings.c.session_id == sid)).mappings().first()
+        return dict(row) if row else None
+
+    def list_ratings(self) -> list[dict]:
+        with self.engine.connect() as c:
+            rows = c.execute(select(ratings).order_by(ratings.c.session_id)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def start_rating(self, sid: str, instrument: str, doc_order: str, profile_id: int) -> dict:
+        """Creates the row once; a second call (reload, second tab) returns the existing row unchanged."""
+        existing = self.get_rating(sid)
+        if existing:
+            return existing
+        now = _now()
+        try:
+            with self.engine.begin() as c:
+                c.execute(insert(ratings).values(session_id=sid, instrument=instrument, doc_order=doc_order,
+                                                 profile_id=profile_id, status="in_progress", answers={},
+                                                 screens={}, started_at=now, updated_at=now))
+        except Exception:  # created concurrently
+            pass
+        return self.get_rating(sid)
+
+    def save_rating_screen(self, sid: str, screen: str, answers: dict, seconds: float | None,
+                           complete: bool = False) -> None:
+        """Merges one screen's answers. Ignored once the questionnaire is complete (answers are then locked)."""
+        now = _now()
+        with self.engine.begin() as c:
+            row = c.execute(select(ratings).where(ratings.c.session_id == sid)).mappings().first()
+            if row is None or row["status"] == "complete":
+                return
+            merged = {**(row["answers"] or {}), **answers}
+            screens = dict(row["screens"] or {})
+            prev = (screens.get(screen) or {}).get("seconds") or 0
+            screens[screen] = {"seconds": round(prev + (seconds or 0), 1), "at": now.isoformat()}
+            values = {"answers": merged, "screens": screens, "updated_at": now}
+            if complete:
+                values.update(status="complete", completed_at=now)
+            c.execute(update(ratings).where(ratings.c.session_id == sid).values(**values))
+
+    def delete_rating(self, sid: str) -> None:
+        with self.engine.begin() as c:
+            c.execute(ratings.delete().where(ratings.c.session_id == sid))
 
     # ---- export
     def export_session(self, sid: str) -> str:
