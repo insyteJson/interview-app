@@ -282,7 +282,13 @@ def render_rating(store, raw_code: str, allowed_codes: set[str]) -> None:
     sess = store.get_session(code)
     cvrow = store.get_cv(code)
     rating = store.get_rating(code)
-    profile = store.get_profile(rating["profile_id"]) if rating else store.get_approved_profile(code)
+    current = store.get_approved_profile(code)
+    # Until the first answer is saved, always show the newest approved profile; afterwards the rated one is kept,
+    # so a participant's answers never mix two versions.
+    if rating and not rating["answers"] and current and current["id"] != rating["profile_id"]:
+        store.repin_rating(code, current["id"])
+        rating = store.get_rating(code)
+    profile = store.get_profile(rating["profile_id"]) if rating else current
     if not sess or sess["status"] != "complete" or not cvrow or not profile:
         st.markdown("### Questionnaire")
         st.info("Your interview resume is not ready yet. The study lead will send you a message when it is; "

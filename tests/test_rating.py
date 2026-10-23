@@ -164,6 +164,25 @@ def test_full_flow_cv_first_with_back_and_resume(tmp_path, monkeypatch):
     assert set(r["screens"]) == {rt.screen_id(s) for s in sc}
 
 
+def test_newer_approved_profile_replaces_the_shown_one_until_the_first_answer(tmp_path, monkeypatch):
+    store = Store(f"sqlite:///{tmp_path}/r.db")
+    old = seed(store, "P01")
+    at = new_app(tmp_path, monkeypatch, "P01")
+    at.run()                                                  # opened before the new version existed
+    assert store.get_rating("P01")["profile_id"] == old
+    new = store.add_profile("P01", "resume-v3", True, "v3", {}, {}, pdf("Resume v3"))
+    at.run()
+    assert store.get_rating("P01")["profile_id"] == old      # not approved yet: still the old one
+    store.approve_profile(new, True)
+    at.run()
+    assert store.get_rating("P01")["profile_id"] == new      # approved and nothing answered: switches
+    store.save_rating_screen("P01", "profile.primary", {"profile_a1": 4}, 3)
+    newer = store.add_profile("P01", "resume-v3", True, "again", {}, {}, pdf("Resume v3b"))
+    store.approve_profile(newer, True)
+    at.run()
+    assert store.get_rating("P01")["profile_id"] == new      # answers exist: stays on the rated version
+
+
 def test_admin_table_has_one_row_per_participant(tmp_path):
     import admin
     store = Store(f"sqlite:///{tmp_path}/r.db")

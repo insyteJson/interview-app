@@ -167,7 +167,17 @@ def render_rating_section(store, sid: str) -> None:
     if not ready:
         st.caption("The link opens the questionnaire once this session has an approved profile and a CV. "
                    "Until then the participant sees 'not ready yet'.")
+    shown = store.get_approved_profile(sid)
+    profs = store.list_profiles(sid)
+    if shown:
+        st.markdown(f"The link shows profile **#{shown['id']} ({shown['version']})**, the newest approved one.")
+    if profs and (not shown or profs[0]["id"] != shown["id"]):
+        st.warning(f"The newest generation #{profs[0]['id']} ({profs[0]['version']}) is not approved, so the link does "
+                   "not show it. Approve it in Step 4 above.")
     r = store.get_rating(sid)
+    if r and shown and r["profile_id"] != shown["id"] and r["answers"]:
+        st.error(f"This participant already answered on profile #{r['profile_id']}. Their answers stay on that "
+                 "version. To re-rate on the newest one, delete their answers below and send the link again.")
     if not r:
         st.caption("Not started.")
     else:

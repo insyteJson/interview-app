@@ -274,6 +274,14 @@ class Store:
                 values.update(status="complete", completed_at=now)
             c.execute(update(ratings).where(ratings.c.session_id == sid).values(**values))
 
+    def repin_rating(self, sid: str, profile_id: int) -> None:
+        """Switches to a newer approved profile, only while no answer has been saved yet."""
+        with self.engine.begin() as c:
+            row = c.execute(select(ratings).where(ratings.c.session_id == sid)).mappings().first()
+            if row and not row["answers"]:
+                c.execute(update(ratings).where(ratings.c.session_id == sid)
+                          .values(profile_id=profile_id, updated_at=_now()))
+
     def delete_rating(self, sid: str) -> None:
         with self.engine.begin() as c:
             c.execute(ratings.delete().where(ratings.c.session_id == sid))
