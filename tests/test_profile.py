@@ -96,17 +96,22 @@ def test_retry_shows_the_failed_attempt():
 
 
 class FakeClient:
-    """Answers entry calls from `replies` in order, and purpose calls from `purposes` (default: echo the aim)."""
+    """Answers entry calls from `replies` in order, purpose calls from `purposes` (default: echo the aim) and
+    category calls from `categories` (default: no group)."""
 
-    def __init__(self, replies, purposes=None):
+    def __init__(self, replies, purposes=None, categories=None):
         self.replies, self.purposes, self.calls = list(replies), list(purposes or []), []
+        self.categories = list(categories or [])
         self.messages = NS(create=self.create)
 
     def create(self, **kw):
         self.calls.append(kw)
-        if kw["system"][0]["text"] == pg.PURPOSE_SYSTEM:
+        system = kw["system"][0]["text"]
+        if system == pg.PURPOSE_SYSTEM:
             aim = json.loads(kw["messages"][0]["content"].split("\n\n")[0])["aim_answer"]
             r = self.purposes.pop(0) if self.purposes else {"purpose": aim, "personal_names": []}
+        elif system == pg.CATEGORY_SYSTEM:
+            r = self.categories.pop(0) if self.categories else {"categories": [], "personal_names": []}
         else:
             r = self.replies.pop(0)
         return NS(model="claude-opus-5-5", stop_reason="end_turn", usage=NS(input_tokens=900, output_tokens=200),
@@ -114,6 +119,9 @@ class FakeClient:
 
     def entry_calls(self):
         return [c for c in self.calls if c["system"][0]["text"] == pg.SYSTEM]
+
+    def category_calls(self):
+        return [c for c in self.calls if c["system"][0]["text"] == pg.CATEGORY_SYSTEM]
 
 
 def test_generate_retries_failed_check_and_builds_resume():
@@ -128,12 +136,14 @@ def test_generate_retries_failed_check_and_builds_resume():
     sent = calls[0]["messages"][0]["content"]
     assert "Anna" not in sent and "a colleague" in sent and "Talk'n'Job" in sent   # only personal names removed
     prof = res["profile"]
-    assert prof["profile_version"] == "resume-v2"
+    assert prof["profile_version"] == "resume-v3"
     assert prof["roles"][0]["display"] == "Team lead, Talk'n'Job" and prof["roles"][0]["period"] == "since 2024"
     assert prof["roles"][0]["tools_stated"] == ["Power BI", "Scrum"] and prof["roles"][0]["purpose"] == "Lead the team"
     x = prof["entries"][0]
     assert x["labels"] == ["Enterprising & Performing"] and x["tags"] == ["Self-initiated"] and x["tools"] == ["Power BI"]
-    assert prof["themes"]["integrity"] == [{"id": "i01", "full": True}]
+    assert x["num"] == 1 and x["dimensions"] == ["integrity"]
+    assert prof["categories"] == [] and not fake.category_calls()       # one role: nothing can recur across roles
+    assert "fewer than two roles" in res["log"]["categories"]["skipped"]
     assert prof["label_stats"] == [{"label": "Enterprising & Performing", "situations": 1, "roles": 1,
                                     "role_indices": [0]}]
     assert prof["overview"]["rows"][0]["counts"] == {"ability": 0, "integrity": 1, "benevolence": 0}
@@ -147,7 +157,7 @@ def test_generate_gives_up_after_three_failed_attempts():
 
 
 def test_request_matches_sdk_signature_and_schema_rules():
-    for kind in ("entry", "purpose"):
+    for kind in ("entry", "purpose", "categories"):
         kw = pg.ProfileGenerator("k", "claude-opus-5-5", client=object()).request_kwargs({"x": 1}, kind=kind)
         inspect.signature(Messages.create).bind(None, **kw)
         for forbidden in ("temperature", "top_p", "top_k", "tool_choice", "thinking"):
@@ -172,6 +182,7 @@ def _walk(node):
 def test_schema_objects_are_closed_and_fully_required():
     _walk(pg.SCHEMA)
     _walk(pg.PURPOSE_SCHEMA)
+    _walk(pg.CATEGORY_SCHEMA)
 
 
 # ------------------------------------------------------------------ resume-v2
@@ -271,54 +282,119 @@ def test_merge_groups_ignore_cross_role_and_unknown_pairs():
     assert [[i["id"] for i in g] for g in groups] == [["i01", "i02"], ["i03"], ["i04"]]
 
 
-def test_merged_event_is_written_once_counted_once_and_cross_listed():
-    fake = FakeClient([_entry("Stayed two hours late to finish regulated samples",
+CAT = {"categories": [{"statement": "Steps in for colleagues who need help", "members": [2, 3],
+                       "summary": "In two roles, the candidate stepped in for colleagues: teaching an apprentice a lab "
+                                  "method [2] and taking over a sick co-worker's class [3]."}],
+       "personal_names": []}
+
+
+def _p01_profile(categories=(CAT,)):
+    fake = FakeClient([_entry("Worked late with the team to meet a regulatory deadline",
                               ["Organising & Executing", "Enterprising & Performing"]),
-                       dict(_entry("Taught the apprentice a microbiology method", ["Organising & Executing"]),
+                       dict(_entry("Trained a junior colleague in a lab method", ["Organising & Executing"]),
                             label_evidence=[{"name": "Organising & Executing", "quote": "the samples were finished"}]),
-                       _entry("Covered a sick co-worker's class", [])])
+                       _entry("Took over a colleague's class at short notice", [])], categories=list(categories))
     turns = _p01_turns()
     for t in turns:   # every answer contains the evidence quotes used above
         t["answer_raw"] += ". stayed two hours longer. the samples were finished"
     res = pg.generate_profile(P01_STATE, turns, [], pg.ProfileGenerator("k", "m", client=fake), merges=[["i01", "i02"]])
+    return res, fake
+
+
+def _pdf_text(pdf):
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    lig = {"\xa0": " ", "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"}
+    return ["".join(lig.get(ch, ch) for ch in p.get_text()) for p in doc]
+
+
+def test_resume_v3_merges_numbers_groups_and_renders_the_template():
+    res, fake = _p01_profile()
     assert res["ok"], res["log"]
     prof = res["profile"]
-    calls = fake.entry_calls()
-    assert len(calls) == 3                                    # 4 incidents, one merged pair
-    first = json.loads(calls[0]["messages"][0]["content"])
-    assert first["note"] == pg.MERGE_NOTE and len(first["exchange"]) == 2
-    assert res["log"]["merges"] == [["i01", "i02"]]
-    merged = next(e for e in prof["entries"] if e["members"] == ["i01", "i02"])
-    assert merged["dimensions"] == ["ability", "integrity"]
-    assert {"id": "i01", "full": True} in prof["themes"]["ability"]
-    assert {"id": "i01", "full": False} in prof["themes"]["integrity"]
+    assert len(fake.entry_calls()) == 3 and len(fake.category_calls()) == 1   # 4 incidents, one merged pair
+    sent = json.loads(fake.category_calls()[0]["messages"][0]["content"])
+    assert [x["n"] for x in sent["situations"]] == [1, 2, 3]
+    assert [e["num"] for e in prof["entries"]] == [1, 2, 3]
+    assert [e["id"] for e in prof["entries"]] == ["i01", "i03", "i04"]         # by role, then interview order
+    assert prof["entries"][0]["dimensions"] == ["ability", "integrity"]
+    c = prof["categories"][0]
+    assert c["situations"] == 2 and c["roles"] == 2 and c["themes"] == ["benevolence"] and c["members"] == [2, 3]
     ov = prof["overview"]
-    assert ov["n_situations"] == 3 and ov["n_roles"] == 3
-    assert ov["rows"][0]["counts"] == {"ability": 1, "integrity": 1, "benevolence": 1}
-    assert ov["rows"][2]["situations"] == 0                   # gym: no situation
-    assert ov["roles_with"] == {"ability": 1, "integrity": 1, "benevolence": 2}
-    stats = {s["label"]: s for s in prof["label_stats"]}
+    assert ov["n_situations"] == 3 and ov["rows"][0]["counts"] == {"ability": 1, "integrity": 1, "benevolence": 1}
+    stats = {x["label"]: x for x in prof["label_stats"]}
     assert stats["Organising & Executing"]["situations"] == 2 and stats["Organising & Executing"]["roles"] == 1
-    # ordering: entries sharing the more widespread label first
-    assert prof["entries"][0]["labels"] and not prof["entries"][-1]["labels"]
-    pdf = pg.render_pdf(prof)
-    text = "\n".join(p.get_text() for p in pymupdf.open(stream=pdf, filetype="pdf")).replace("\xa0", " ").replace("\ufb01", "fi")
-    for expected in ("Where behaviour was shown", "Roles with at least one situation", "1 of 3", "Kinds of behaviour shown",
-                     "In one role only", "Also here:", "counted once", "also counts for Standing by standards",
-                     "No situation given", "Purpose: I analyse water samples", "Doing the work", "Helping others"):
-        assert expected in text, expected
-    assert text.count("Stayed two hours late to finish regulated samples") == 2   # full entry + stub
+    pages = _pdf_text(pg.render_pdf(prof))
+    assert prof["layout"] == "summary on page 1" and len(pages) == 2
+    p1, p2 = pages
+    for expected in ("Where behaviour was shown", "Roles with at least one situation", "Kinds of behaviour shown",
+                     "Organising & Executing", "2 situations", "Summary", "Steps in for colleagues who need help",
+                     "2 situations · 2 roles", "[2]", "No situation given", "Purpose: I analyse water samples"):
+        assert expected in p1, expected
+    for expected in ("Situations", "[1]", "Worked late with the team to meet a regulatory deadline.",
+                     "Doing the work + Standing by standards", "Situation:", "Result:"):
+        assert expected in p2, expected
+    assert "Situation:" not in p1
 
 
-def test_pdf_layout():
+def test_no_recurring_behaviour_is_stated_not_hidden():
+    res, _ = _p01_profile(categories=({"categories": [], "personal_names": []},))
+    assert res["ok"] and res["profile"]["categories"] == []
+    assert "No kind of behaviour was described in situations from two different roles" in _pdf_text(
+        pg.render_pdf(res["profile"]))[0]
+
+
+def test_categories_retry_with_feedback_then_block_the_profile():
+    bad = {"categories": [{"statement": "Always helpful", "members": [1, 2],
+                           "summary": "The candidate helped twice [1]."}], "personal_names": []}
+    res, fake = _p01_profile(categories=(bad, bad, bad))
+    assert not res["ok"] and len(fake.category_calls()) == 3
+    retry = fake.category_calls()[1]["messages"][0]["content"]
+    assert "Your previous answer was:" in retry and "trait or frequency words" in retry
+    assert "failed the checks" in res["log"]["categories"]["skipped"]
+
+
+def test_category_checks():
+    entries = [{"num": 1, "role_index": 0, "dimensions": ["ability"]}, {"num": 2, "role_index": 0, "dimensions": ["ability"]},
+               {"num": 3, "role_index": 1, "dimensions": ["integrity"]}]
+    ok = [{"statement": "Raises problems with the person responsible", "members": [1, 3],
+           "summary": "In two roles, the candidate raised problems with the person responsible [1] [3]."}]
+    assert pg.check_categories(ok, [], entries, []) == ([], [])
+    def fails(cats, names=()):
+        return " | ".join(pg.check_categories(cats, list(names), entries, [])[0])
+    assert "2 different roles" in fails([dict(ok[0], members=[1, 2], summary="Twice [1] [2].")])
+    assert "cite each member exactly once" in fails([dict(ok[0], summary="Raised problems [1].")])
+    assert "unknown situation numbers [7]" in fails([dict(ok[0], members=[1, 3, 7])])
+    assert "trait or frequency words: consistently" in fails([dict(ok[0], statement="Consistently raises problems")])
+    assert "contains a number" in fails([dict(ok[0], statement="Raised 3 problems")])
+    assert "number other than the citations" in fails([dict(ok[0], summary="It took 2 hours [1] [3].")])
+    assert "used more than once" in fails([ok[0], dict(ok[0], statement="Helps others")])
+    assert "personal names" in fails(ok, ["Tom"])
+
+
+def test_headline_checks_for_behaviour_level():
+    src = "I worked until 1:00 AM before the deadline, the boss now sees live reporting"
+    for headline, expected in (("Collected 70 samples in one day", "contains a number"),
+                               ("Consistently went beyond the call of duty", "trait, frequency"),
+                               ("According to the candidate saved the project", "according")):
+        fails, _ = pg.check_entry(dict(GOOD, headline=headline, labels=[], tags=[]), src, [])
+        assert any(expected in f for f in fails), (headline, fails)
+    _, warns = pg.check_entry(dict(GOOD, labels=[], tags=[], result="The candidate described it as a success."), src, [])
+    assert any("own judgement" in w for w in warns)
+
+
+def test_pdf_layout_single_role_and_overflow_fallback():
     res = pg.generate_profile(STATE, TURNS, RULES, pg.ProfileGenerator("k", "m", client=FakeClient([GOOD])))
-    pdf = pg.render_pdf(res["profile"])
-    doc = pymupdf.open(stream=pdf, filetype="pdf")
-    text = "\n".join(p.get_text() for p in doc)
-    for expected in ("Behavioural resume", "Where behaviour was shown", "Team lead, Talk'n'Job", "since 2024",
-                     "Power BI, Scrum", "Purpose: Lead the team", "Standing by standards", "Enterprising & Performing",
-                     "Situation:", "Result:", "Candidate P01"):
-        assert expected in text, expected
+    pages = _pdf_text(pg.render_pdf(res["profile"]))
+    assert len(pages) == 2
+    for expected in ("Behavioural resume", "Team lead, Talk'n'Job", "since 2024", "Power BI, Scrum",
+                     "Purpose: Lead the team", "Enterprising & Performing", "Candidate P01"):
+        assert expected in pages[0], expected
     for hidden in ("integrity", "fallback", "Anna", "Looking back"):
-        assert hidden.lower() not in text.lower(), hidden
-    assert doc.page_count == 1
+        assert hidden.lower() not in " ".join(pages).lower(), hidden
+    # many roles: page 1 overflows, so the summary moves to page 2 (fills can never leak onto later pages)
+    prof = json.loads(json.dumps(res["profile"]))
+    role = prof["roles"][0]
+    prof["roles"] = [dict(role, display=f"Role {chr(65 + k)}", purpose="Lead the team " * 6) for k in range(9)]
+    prof["overview"] = pg.build_overview(prof["roles"], prof["entries"])
+    pg.render_pdf(prof)
+    assert prof["layout"].startswith("summary on page 2")

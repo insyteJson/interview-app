@@ -75,11 +75,27 @@ def _check_v2(prof: dict, log: dict) -> None:
                 c2.warning(w)
         else:
             c2.caption(f"No purpose line: {plog.get('skipped', 'not generated')}")
-    st.markdown("*Entries*")
+    if "categories" in prof:
+        st.markdown("*Recurring behaviour* (grouped by the model; check that the statement is true of every cited "
+                    "situation and that the summary adds nothing)")
+        by_num = {e["num"]: e for e in prof["entries"]}
+        if not prof["categories"]:
+            st.caption("No group: " + (log.get("categories", {}).get("skipped")
+                                       or "the model found no behaviour recurring in two different roles."))
+        for c in prof["categories"]:
+            with st.expander(f"{c['statement']} · {c['situations']} situations · {c['roles']} roles", expanded=True):
+                st.markdown(c["summary"])
+                for m in c["members"]:
+                    e = by_num[m]
+                    st.caption(f"[{m}] {e['headline']} — {e['role']}")
+        for w in log.get("categories", {}).get("warnings", []):
+            st.warning(w)
+    st.markdown("*Situations*")
     for x in prof["entries"]:
         themes = " + ".join(pg.HEADINGS[d] for d in x["dimensions"])
         ids = " + ".join(x["members"])
-        with st.expander(f"{ids} · {themes} · {x['headline']}"):
+        num = f"[{x['num']}] " if "num" in x else ""
+        with st.expander(f"{num}{ids} · {themes} · {x['headline']}"):
             c1, c2 = st.columns(2)
             c1.markdown("**Answers (after redaction)**" + (" — merged accounts" if len(x["members"]) > 1 else ""))
             for e in x["source"]:
@@ -186,8 +202,9 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
     # ---------------- step 4: operator check
     latest = profs[0]
     log = latest["log"]
-    attempts = sum(len(i["attempts"]) for i in log["incidents"]) + sum(len(p["attempts"]) for p in log.get("purposes", []))
-    calls = [a for i in log["incidents"] for a in i["attempts"]] + [a for p in log.get("purposes", []) for a in p["attempts"]]
+    calls = ([a for i in log["incidents"] for a in i["attempts"]] + [a for p in log.get("purposes", []) for a in p["attempts"]]
+             + list((log.get("categories") or {}).get("attempts", [])))
+    attempts = len(calls)
     tok_in = sum(a.get("meta", {}).get("input_tokens", 0) for a in calls)
     tok_out = sum(a.get("meta", {}).get("output_tokens", 0) for a in calls)
     st.caption(f"{len(profs)} generation(s) logged · latest #{latest['id']} ({latest['version']}, {latest['reason']}) · "
@@ -203,6 +220,11 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
                 st.markdown(f"**{' + '.join(i.get('members') or [i['id']])}**")
                 for a in i["attempts"]:
                     st.write(a.get("error") or a.get("fails"))
+        cl = log.get("categories") or {}
+        if cl.get("skipped") == "failed the checks after 3 attempts":
+            st.markdown("**Recurring behaviour** (grouping failed its checks; generate again)")
+            for a in cl.get("attempts", []):
+                st.write(a.get("error") or a.get("fails"))
         return
 
     st.markdown("**Step 4 · Check every entry against the answers** (never edit by hand; regenerate instead)")
@@ -211,8 +233,9 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
         _check_v2(prof, log)
     else:
         _check_v1(prof)
-    approved = st.checkbox("I checked every entry and purpose line against the answers. Nothing is added, every "
-                           "label and tag meets its coding rule, no personal name appears.",
+    approved = st.checkbox("I checked every situation, purpose line and behaviour group against the answers. Nothing is "
+                           "added, every label and tag meets its coding rule, every group statement is true of each "
+                           "situation it cites, no personal name appears.",
                            value=bool(latest["approved"]), key=f"appr_{sid}_{latest['id']}")
     if approved != bool(latest["approved"]):
         store.approve_profile(latest["id"], approved)

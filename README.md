@@ -139,7 +139,17 @@ Addresses, dates of birth and unlisted employers or school names are NOT detecte
 (re-reads the result for every listed term) and the manual check catch them. A name that is split over two lines may not be
 matched. Treat the automatic step as an aid, never as the guarantee. PyMuPDF is AGPL-licensed.
 
-## Behavioural resume for recruiters (`profile_gen.py`, `profile_ui.py`, version `resume-v2`)
+## Behavioural resume for recruiters (`profile_gen.py`, `profile_ui.py`, version `resume-v3`)
+
+**resume-v3 template (22.10.2026).** Page 1: header; "Where behaviour was shown" (role x theme matrix, filled cells,
+purpose and tools per role); "Kinds of behaviour shown" (every competency label, ranked by roles then situations, one
+dot per situation, blue when shown in two or more roles); "Summary" (one block per recurring behaviour: statement,
+counts, one or two sentences citing the situations as [n]). Page 2+: "Situations", numbered like a reference list
+(headline, role, theme, labels, situation, result). Headlines name the behaviour in general terms (no numbers, no
+trait/frequency words, no "according to"); results put quantities next to their baseline. Recurring behaviours come
+from one model call per candidate; code accepts a group only with >= 2 situations from >= 2 roles, every member cited
+exactly once, no trait words or numbers; 3 attempts with feedback, then the profile is blocked. Page 1 is laid out on
+its own; if it overflows, the summary moves to page 2 so the cell fills never repeat on later pages.
 
 Interview additions: the role form (engine `app-v3`, 20.10.2026) replaces the free-text listing, the list
 confirmation and the paid-status question of `app-v2`. Fields per category:
