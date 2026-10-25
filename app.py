@@ -2,6 +2,7 @@
 
 Participant link:  https://<your-app>/?code=P01
 Questionnaire:     https://<your-app>/?rate=P01   (send only once the profile is approved)
+Recruiter study:   https://<your-app>/?review=inv-...   (invite links are created in the researcher view)
 Researcher view:   https://<your-app>/?admin=1
 """
 
@@ -98,7 +99,16 @@ if st.query_params.get("admin"):
             return None
         from profile_gen import ProfileGenerator
         return ProfileGenerator(api_key=key, model=MODEL, effort=EFFORT)
-    render_admin(store, cfg("ADMIN_PASSWORD"), st.session_state.get("_generator_override") or make_generator)
+    render_admin(store, cfg("ADMIN_PASSWORD"), st.session_state.get("_generator_override") or make_generator,
+                 base_url=cfg("APP_URL"))
+    st.stop()
+
+
+# ------------------------------------------------------------------ recruiter study (invite links, ?review=inv-...)
+
+if st.query_params.get("review"):
+    from review import render_review
+    render_review(store, st.query_params.get("review"), cfg("APP_URL"))
     st.stop()
 
 
