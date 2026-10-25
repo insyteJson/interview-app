@@ -12,6 +12,7 @@ import streamlit as st
 import profile_gen as pg
 
 
+@st.cache_data(show_spinner=False, max_entries=32)
 def _preview_pngs(pdf: bytes) -> list[bytes]:
     doc = pymupdf.open(stream=pdf, filetype="pdf")
     out = [p.get_pixmap(dpi=80).tobytes("png") for p in doc]

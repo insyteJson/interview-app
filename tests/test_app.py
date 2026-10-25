@@ -134,6 +134,7 @@ def test_admin_profile_flow(tmp_path, monkeypatch):
     at.session_state["_generator_override"] = lambda: pg.ProfileGenerator("k", "m", client=fake)
     at.run()
     at.text_input(key="admin_pw").input("pw").run()
+    at.segmented_control(key="admin_sub").set_value("Profile").run()      # profile steps live in this part
     assert not at.exception
     gen_btn = at.button(key="gen_P01")
     assert gen_btn.disabled                                   # no redaction saved yet
@@ -157,7 +158,7 @@ def test_admin_profile_flow(tmp_path, monkeypatch):
 def test_consent_version_is_read_from_the_shown_text():
     src = open(os.path.join(APP_DIR, "app.py"), encoding="utf-8").read()
     ns = {"re": __import__("re")}
-    exec(src[src.index("def consent_version"):src.index("try:\n    store = get_store(")], ns)
+    exec(src[src.index("def consent_version"):src.index("try:\n    store = RunCache(get_store(")], ns)
     cv = ns["consent_version"]
     assert cv("*Version 3.1 (app version, DRAFT)*") == "3.1"
     assert cv("*Version 3.1*\n **[CONFIRM: x]**") == "3.1-draft"
@@ -195,6 +196,7 @@ def test_admin_merge_step_gates_generation(tmp_path, monkeypatch):
     at.session_state["_generator_override"] = lambda: pg.ProfileGenerator("k", "m", client=tp.FakeClient([]))
     at.run()
     at.text_input(key="admin_pw").input("pw").run()
+    at.segmented_control(key="admin_sub").set_value("Profile").run()
     assert not at.exception
     assert at.button(key="gen_P01").disabled                  # merge decisions not saved yet
     at.checkbox(key="dup_P01_i01_i02").check().run()

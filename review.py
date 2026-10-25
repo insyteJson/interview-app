@@ -163,10 +163,16 @@ def _aware(dt):
 
 def ready_pool(store) -> list[dict]:
     """Favourites with a complete interview, an approved profile and a CV marked as checked."""
+    favs = store.list_favorites()
+    if not favs:
+        return []
+    done = {s["id"] for s in store.list_sessions() if s["status"] == "complete"}
+    profs, cvs = store.profiles_meta(), store.cvs_meta()
     out = []
-    for sid in sorted(store.list_favorites()):
-        sess, prof, cv = store.get_session(sid), store.get_approved_profile(sid), store.get_cv(sid)
-        if sess and sess["status"] == "complete" and prof and cv and cv["checked"]:
+    for sid in sorted(favs):
+        prof = next((p for p in profs.get(sid, []) if p["approved"] and p["ok"] and p["has_pdf"]), None)
+        cv = cvs.get(sid)
+        if sid in done and prof and cv and cv["checked"]:
             out.append({"session_id": sid, "profile_id": prof["id"]})
     return out
 
@@ -341,10 +347,15 @@ def _tour_image(k: int) -> bytes:
 
 
 def _tour_body(code: str, on_finish, scope: str = "app") -> None:
+    """The guide. Back/Next change the step in a callback, so inside a partial refresh only the guide re-renders."""
     kk = f"rv_{code}_tour"
     k = st.session_state.get(kk, 0)
     n = len(guide.STEPS)
     step = guide.STEPS[k]
+
+    def go(to: int):
+        st.session_state[kk] = to
+
     left, right = st.columns([3, 2], gap="large")
     with left:
         st.image(_tour_image(k), width="stretch")
@@ -359,13 +370,11 @@ def _tour_body(code: str, on_finish, scope: str = "app") -> None:
         html(f"<span class='rv-de'>{step['text'][1]}</span>")
         st.write("")
         c = st.columns(2)
-        if k > 0 and c[0].button("← Back · Zurück", key=f"{kk}_back", width="stretch"):
-            st.session_state[kk] = k - 1
-            st.rerun(scope=scope)
+        if k > 0:
+            c[0].button("← Back · Zurück", key=f"{kk}_back", width="stretch", on_click=go, args=(k - 1,))
         if k < n - 1:
-            if c[1].button("Next · Weiter →", key=f"{kk}_next", type="primary", width="stretch"):
-                st.session_state[kk] = k + 1
-                st.rerun(scope=scope)
+            c[1].button("Next · Weiter →", key=f"{kk}_next", type="primary", width="stretch", on_click=go,
+                        args=(k + 1,))
             if st.button("Skip the guide · Anleitung überspringen", key=f"{kk}_skip", type="tertiary"):
                 st.session_state[kk] = 0
                 on_finish()
@@ -374,9 +383,18 @@ def _tour_body(code: str, on_finish, scope: str = "app") -> None:
             on_finish()
 
 
+@st.fragment
+def _tour_fragment(store, code: str) -> None:
+    def finish():
+        store.update_recruiter(code, guide_done=1)
+        st.session_state.pop("rv_new", None)
+        st.rerun()
+    _tour_body(code, finish)
+
+
 @st.dialog("How to read the interview resume · So lesen Sie den Interview-Lebenslauf", width="large")
 def _tour_dialog(code: str) -> None:
-    _tour_body(code, st.rerun, scope="fragment")
+    _tour_body(code, st.rerun)
 
 
 # ------------------------------------------------------------------ pages
@@ -463,11 +481,7 @@ def _recruiter_page(store, rec: dict, base_url) -> None:
         md("**Before you start: a one-minute guide to the interview resume.** The example is fictional.",
            "**Vor dem Start: eine einminütige Anleitung zum Interview-Lebenslauf.** Das Beispiel ist fiktiv.")
 
-        def finish():
-            store.update_recruiter(code, guide_done=1)
-            st.session_state.pop("rv_new", None)
-            st.rerun()
-        _tour_body(code, finish)
+        _tour_fragment(store, code)
         return
 
     stage_key = f"rv_{code}_stage"
@@ -553,7 +567,15 @@ def _rate(store, rec: dict, rv: dict) -> None:
     _header(done, idx)
 
     if screen[0] == "compare":
-        _compare(store, rec, rv, rk, sc)
+        _, mid, _ = st.columns([1, 4, 1])
+        with mid, st.container(border=True):
+            _compare_card(store, rec["code"], rv, rk, sc)
+        md("Both documents for reference:", "Beide Dokumente zum Nachsehen:")
+        a, b = st.columns(2, gap="medium")
+        for col, (label, doc) in zip((a, b), (sc[0], sc[1])):
+            with col:
+                html(f"<span class='rv-doclabel'>Document {label} · Dokument {label}</span>")
+                _doc_pane(store, rv, doc, f"docpanecmp{label}")
         return
 
     doc = screen[1]
@@ -567,80 +589,94 @@ def _rate(store, rec: dict, rv: dict) -> None:
             _tour_dialog(code)
         _doc_pane(store, rv, doc, f"docpane{screen[0]}")
     with right, st.container(key="rv_q"):
-        keys = doc_keys(doc)
-        n_done = len(_collect(rk, keys))
-        md(f"**Rate Document {screen[0]} on its own** <span class='rv-count'>· {n_done} / {len(keys)}</span>",
-           f"Bewerten Sie Dokument {screen[0]} für sich allein. Nach der letzten Antwort geht es automatisch weiter.")
-        st.progress(n_done / len(keys))
-        titles = [("Using this document", "Nutzen des Dokuments"),
-                  ("What it tells you", "Was es Ihnen sagt"),
-                  ("Reliability and distinctiveness", "Verlässlichkeit und Unterscheidbarkeit")]
-        for (scale, lead, its), (t_en, t_de) in zip(GROUPS, titles):
-            with st.container(border=True):
-                html(f"<span class='rv-group'>{t_en}</span> <span class='rv-de'>· {t_de}</span>")
-                if lead:
-                    md(f"**{lead[0]}**", lead[1])
-                for iid, en, de in its:
-                    html(f"<p class='rv-q'>{en}<br><span class='rv-de'>{de}</span></p>")
-                    st.segmented_control(en, [1, 2, 3, 4, 5, 6, 7], key=f"{rk}_{doc}_{iid}",
-                                         label_visibility="collapsed", width="stretch",
-                                         on_change=_save_doc, args=(store, rv, rk, screen))
-                lo, hi = scale[0].split(" · ")
-                lo_de, hi_de = scale[1].split(" · ")
-                html(f"<div class='rv-anchors'><span>{lo} <span class='rv-de'>({lo_de[4:]})</span></span>"
-                     f"<span>{hi} <span class='rv-de'>({hi_de[4:]})</span></span></div>")
-        nav = st.columns(2)
-        if idx > 0 and nav[0].button("← Back · Zurück", key=f"{rk}_back{idx}", width="stretch"):
-            st.session_state[f"{rk}_idx"] = idx - 1
-            st.rerun()
-        if screen[0] in done_screens and nav[1].button("Continue · Weiter →", key=f"{rk}_fwd{idx}", type="primary",
-                                                       width="stretch"):
-            _save_doc(store, rv, rk, screen)
-            st.rerun()
-        if st.button("I recognise this person – skip · Ich erkenne diese Person – überspringen", key=f"{rk}_skip",
-                     type="tertiary", icon=":material/visibility_off:"):
-            store.skip_review(rv["id"])
-            st.toast("Skipped. Here is the next candidate. · Übersprungen. Hier ist die nächste Person.")
-            st.rerun()
+        _doc_questions(store, rv, rk, screen, idx, screen[0] in done_screens)
 
 
-def _compare(store, rec, rv, rk, sc) -> None:
-    _, mid, _ = st.columns([1, 4, 1])
-    with mid, st.container(border=True):
-        html("<span class='rv-group'>Last question for this candidate</span> "
-             "<span class='rv-de'>· Letzte Frage zu dieser Person</span>")
-        html(f"<p class='rv-q'>{PREF[0]}<br><span class='rv-de'>{PREF[1]}</span></p>")
-        st.segmented_control(PREF[0], PREF_OPTIONS, key=f"{rk}_pref", label_visibility="collapsed", width="stretch")
-        html(f"<p class='rv-q'>{MISSING[0]}<br><span class='rv-de'>{MISSING[1]}</span></p>")
-        st.text_area(MISSING[0], key=f"{rk}_missing", label_visibility="collapsed", height=68)
-        nav = st.columns([1, 2])
-        if nav[0].button("← Back · Zurück", key=f"{rk}_back2", width="stretch"):
-            st.session_state[f"{rk}_idx"] = 1
-            st.rerun()
-        pref = st.session_state.get(f"{rk}_pref")
-        if nav[1].button("Finish this candidate · Person abschließen", key=f"{rk}_finish", type="primary",
-                         disabled=pref is None, width="stretch"):
-            first = sc[0][1]
-            pref_doc = {"Document A": first, "Document B": sc[1][1]}.get(pref, "equal")
-            ans = {"pref": pref, "pref_doc": pref_doc}
-            missing = (st.session_state.get(f"{rk}_missing") or "").strip()
-            if missing:
-                ans["missing"] = missing
-            t0 = st.session_state.pop(f"{rk}_t0", None)
-            store.save_review_screen(rv["id"], "compare", ans, round(time.time() - t0, 1) if t0 else None,
-                                     complete=True)
-            done = completed(store, rec["code"])
-            st.session_state[f"rv_{rec['code']}_stage"] = "between" if done >= MIN_CANDIDATES else None
-            st.toast(f"Candidate {done} done · Person {done} geschafft", icon=":material/check_circle:")
-            st.rerun()
-        if pref is None:
-            st.caption("Choose an answer to finish. · Bitte eine Antwort wählen.")
-    md("Both documents for reference:", "Beide Dokumente zum Nachsehen:")
-    a, b = st.columns(2, gap="medium")
-    for col, (label, doc) in zip((a, b), (sc[0], sc[1])):
-        with col:
-            html(f"<span class='rv-doclabel'>Document {label} · Dokument {label}</span>")
-            _doc_pane(store, rv, doc, f"docpanecmp{label}")
+def _leave(rk: str, screen_id: str) -> None:
+    """Forget the answers a screen had when it was opened (so re-opening it starts a fresh comparison)."""
+    st.session_state.pop(f"{rk}_entry_{screen_id}", None)
+
+
+@st.fragment
+def _doc_questions(store, rv: dict, rk: str, screen: tuple[str, str], idx: int, was_done: bool) -> None:
+    """The 10 questions for one document. A click re-runs only this panel and touches no database; the answers
+    are saved once, when the last one is given, and then the page moves on."""
+    doc = screen[1]
+    keys = doc_keys(doc)
+    entry = f"{rk}_entry_{screen[0]}"
+    if entry not in st.session_state:
+        st.session_state[entry] = tuple(st.session_state.get(f"{rk}_{k}") for k in keys)
+    n_done = len(_collect(rk, keys))
+    md(f"**Rate Document {screen[0]} on its own** <span class='rv-count'>· {n_done} / {len(keys)}</span>",
+       f"Bewerten Sie Dokument {screen[0]} für sich allein. Nach der letzten Antwort geht es automatisch weiter.")
+    st.progress(n_done / len(keys))
+    titles = [("Using this document", "Nutzen des Dokuments"),
+              ("What it tells you", "Was es Ihnen sagt"),
+              ("Reliability and distinctiveness", "Verlässlichkeit und Unterscheidbarkeit")]
+    for (scale, lead, its), (t_en, t_de) in zip(GROUPS, titles):
+        with st.container(border=True):
+            html(f"<span class='rv-group'>{t_en}</span> <span class='rv-de'>· {t_de}</span>")
+            if lead:
+                md(f"**{lead[0]}**", lead[1])
+            for iid, en, de in its:
+                html(f"<p class='rv-q'>{en}<br><span class='rv-de'>{de}</span></p>")
+                st.segmented_control(en, [1, 2, 3, 4, 5, 6, 7], key=f"{rk}_{doc}_{iid}",
+                                     label_visibility="collapsed", width="stretch")
+            lo, hi = scale[0].split(" · ")
+            lo_de, hi_de = scale[1].split(" · ")
+            html(f"<div class='rv-anchors'><span>{lo} <span class='rv-de'>({lo_de[4:]})</span></span>"
+                 f"<span>{hi} <span class='rv-de'>({hi_de[4:]})</span></span></div>")
+    current = tuple(st.session_state.get(f"{rk}_{k}") for k in keys)
+    if None not in current and current != st.session_state[entry]:
+        _save_doc(store, rv, rk, screen)                 # the only database write on this screen
+        _leave(rk, screen[0])
+        st.rerun()
+    nav = st.columns(2)
+    if idx > 0 and nav[0].button("← Back · Zurück", key=f"{rk}_back{idx}", width="stretch"):
+        _leave(rk, screen[0])
+        st.session_state[f"{rk}_idx"] = idx - 1
+        st.rerun()
+    if was_done and nav[1].button("Continue · Weiter →", key=f"{rk}_fwd{idx}", type="primary", width="stretch"):
+        _save_doc(store, rv, rk, screen)
+        _leave(rk, screen[0])
+        st.rerun()
+    if st.button("I recognise this person – skip · Ich erkenne diese Person – überspringen", key=f"{rk}_skip",
+                 type="tertiary", icon=":material/visibility_off:"):
+        store.skip_review(rv["id"])
+        st.toast("Skipped. Here is the next candidate. · Übersprungen. Hier ist die nächste Person.")
+        st.rerun()
+
+
+@st.fragment
+def _compare_card(store, code: str, rv: dict, rk: str, sc) -> None:
+    html("<span class='rv-group'>Last question for this candidate</span> "
+         "<span class='rv-de'>· Letzte Frage zu dieser Person</span>")
+    html(f"<p class='rv-q'>{PREF[0]}<br><span class='rv-de'>{PREF[1]}</span></p>")
+    st.segmented_control(PREF[0], PREF_OPTIONS, key=f"{rk}_pref", label_visibility="collapsed", width="stretch")
+    html(f"<p class='rv-q'>{MISSING[0]}<br><span class='rv-de'>{MISSING[1]}</span></p>")
+    st.text_area(MISSING[0], key=f"{rk}_missing", label_visibility="collapsed", height=68)
+    nav = st.columns([1, 2])
+    if nav[0].button("← Back · Zurück", key=f"{rk}_back2", width="stretch"):
+        st.session_state[f"{rk}_idx"] = 1
+        st.rerun()
+    pref = st.session_state.get(f"{rk}_pref")
+    if nav[1].button("Finish this candidate · Person abschließen", key=f"{rk}_finish", type="primary",
+                     disabled=pref is None, width="stretch"):
+        first = sc[0][1]
+        pref_doc = {"Document A": first, "Document B": sc[1][1]}.get(pref, "equal")
+        ans = {"pref": pref, "pref_doc": pref_doc}
+        missing = (st.session_state.get(f"{rk}_missing") or "").strip()
+        if missing:
+            ans["missing"] = missing
+        t0 = st.session_state.pop(f"{rk}_t0", None)
+        store.save_review_screen(rv["id"], "compare", ans, round(time.time() - t0, 1) if t0 else None,
+                                 complete=True)
+        done = completed(store, code)
+        st.session_state[f"rv_{code}_stage"] = "between" if done >= MIN_CANDIDATES else None
+        st.toast(f"Candidate {done} done · Person {done} geschafft", icon=":material/check_circle:")
+        st.rerun()
+    if pref is None:
+        st.caption("Choose an answer to finish. · Bitte eine Antwort wählen.")
 
 
 def _between(store, rec: dict, base_url) -> None:
@@ -651,46 +687,51 @@ def _between(store, rec: dict, base_url) -> None:
     with st.container(key="rv_narrow"), st.container(key="rv_between"):
         html(f"<div style='text-align:center'>{_dots(done)}</div>")
         st.write("")
-        if rec["experience"] is None:
-            st.success(A(*MILESTONE), icon=":material/favorite:")
-            with st.container(border=True):
-                html("<span class='rv-group'>Two quick questions about you</span> "
-                     "<span class='rv-de'>· Zwei kurze Fragen zu Ihnen</span>")
-                html(f"<p class='rv-q'>{EXPERIENCE[0]}<br><span class='rv-de'>{EXPERIENCE[1]}</span></p>")
-                exp = st.segmented_control(EXPERIENCE[0], EXPERIENCE_OPTIONS, key=f"rv_{code}_exp",
-                                           label_visibility="collapsed", width="stretch")
-                html(f"<p class='rv-q'>{DOMAIN[0]}<br><span class='rv-de'>{DOMAIN[1]}</span></p>")
-                dom = st.text_input(DOMAIN[0], key=f"rv_{code}_dom", label_visibility="collapsed")
-                html(f"<p class='rv-q'>{COMMENT[0]}<br><span class='rv-de'>{COMMENT[1]}</span></p>")
-                com = st.text_area(COMMENT[0], key=f"rv_{code}_com", label_visibility="collapsed", height=80)
+        _between_card(store, code, rec["experience"] is None, done, more)
 
-            def save():
-                store.update_recruiter(code, experience=exp, domain=(dom or "").strip() or None,
-                                       comment=(com or "").strip() or None)
-        else:
-            en, de = ROTATING[(done - MIN_CANDIDATES - 1) % len(ROTATING)]
-            st.success(A(en.format(n=done), de.format(n=done)), icon=":material/favorite:")
-            exp = True
 
-            def save():
-                pass
-        if not more:
-            st.info(A("You have rated every candidate available right now.",
-                      "Sie haben alle derzeit verfügbaren Personen bewertet."))
-        c = st.columns(2)
-        if more and c[0].button("Rate another candidate (~8 min) · Noch eine Person", type="primary",
-                                key=f"rv_{code}_another", disabled=exp is None, width="stretch",
-                                icon=":material/arrow_forward:"):
-            save()
-            st.session_state[f"rv_{code}_stage"] = None
-            st.rerun()
-        if c[1].button("Finish · Beenden" if rec["experience"] is None else "Stop here · Hier aufhören",
-                       key=f"rv_{code}_stop", disabled=exp is None, width="stretch"):
-            save()
-            st.session_state[f"rv_{code}_stage"] = "thanks"
-            st.rerun()
-        if exp is None:
-            st.caption("Please answer the experience question first. · Bitte zuerst die Frage zur Erfahrung beantworten.")
+@st.fragment
+def _between_card(store, code: str, ask: bool, done: int, more: bool) -> None:
+    if ask:
+        st.success(A(*MILESTONE), icon=":material/favorite:")
+        with st.container(border=True):
+            html("<span class='rv-group'>Two quick questions about you</span> "
+                 "<span class='rv-de'>· Zwei kurze Fragen zu Ihnen</span>")
+            html(f"<p class='rv-q'>{EXPERIENCE[0]}<br><span class='rv-de'>{EXPERIENCE[1]}</span></p>")
+            exp = st.segmented_control(EXPERIENCE[0], EXPERIENCE_OPTIONS, key=f"rv_{code}_exp",
+                                       label_visibility="collapsed", width="stretch")
+            html(f"<p class='rv-q'>{DOMAIN[0]}<br><span class='rv-de'>{DOMAIN[1]}</span></p>")
+            dom = st.text_input(DOMAIN[0], key=f"rv_{code}_dom", label_visibility="collapsed")
+            html(f"<p class='rv-q'>{COMMENT[0]}<br><span class='rv-de'>{COMMENT[1]}</span></p>")
+            com = st.text_area(COMMENT[0], key=f"rv_{code}_com", label_visibility="collapsed", height=80)
+
+        def save():
+            store.update_recruiter(code, experience=exp, domain=(dom or "").strip() or None,
+                                   comment=(com or "").strip() or None)
+    else:
+        en, de = ROTATING[(done - MIN_CANDIDATES - 1) % len(ROTATING)]
+        st.success(A(en.format(n=done), de.format(n=done)), icon=":material/favorite:")
+        exp = True
+
+        def save():
+            pass
+    if not more:
+        st.info(A("You have rated every candidate available right now.",
+                  "Sie haben alle derzeit verfügbaren Personen bewertet."))
+    c = st.columns(2)
+    if more and c[0].button("Rate another candidate (~8 min) · Noch eine Person", type="primary",
+                            key=f"rv_{code}_another", disabled=exp is None, width="stretch",
+                            icon=":material/arrow_forward:"):
+        save()
+        st.session_state[f"rv_{code}_stage"] = None
+        st.rerun()
+    if c[1].button("Finish · Beenden" if ask else "Stop here · Hier aufhören",
+                   key=f"rv_{code}_stop", disabled=exp is None, width="stretch"):
+        save()
+        st.session_state[f"rv_{code}_stage"] = "thanks"
+        st.rerun()
+    if exp is None:
+        st.caption("Please answer the experience question first. · Bitte zuerst die Frage zur Erfahrung beantworten.")
 
 
 def _share(store, rec: dict, base_url) -> None:

@@ -253,3 +253,35 @@ def test_export_has_one_row_per_recruiter_and_candidate_with_flag(store):
     t = admin.reviews_table(store)
     assert list(t["recruiter"]) == ["R01"] and t.loc[0, "profile_u1"] == 4 and bool(t.loc[0, "flag_identical"])
     assert {"cv_r2", "sec_A", "sec_compare", "pref_doc", "experience"} <= set(t.columns)
+
+
+def test_shared_reuse_is_cleared_by_any_write(store):
+    from storage import RunCache
+    seed(store, "P01")
+    a = RunCache(store, shared_ttl=30)
+    assert a.list_favorites() == {"P01"}
+    store.set_favorite("P01", False)                       # a write that bypasses the cache wrapper
+    assert RunCache(store, shared_ttl=30).list_favorites() == set()
+
+
+def test_answers_are_saved_once_per_document_and_back_does_not_jump(tmp_path, monkeypatch, store):
+    seed(store, "P01")
+    rec = store.redeem_invite(store.create_invite("researcher"), consent())
+    store.update_recruiter("R01", guide_done=1)
+    at = app(tmp_path, monkeypatch, f"R01.{rec['key']}")
+    at.run()
+    rv_ = store.list_reviews(recruiter="R01")[0]
+    keys = [w.key for w in at.segmented_control if w.key and w.key.split("_")[-2] in ("profile", "cv")]
+    for k in keys[:9]:
+        at.segmented_control(key=k).set_value(3).run()
+    assert store.get_review(rv_["id"])["screens"] == {}      # nothing written before the 10th answer
+    at.segmented_control(key=keys[9]).set_value(3).run()
+    assert set(store.get_review(rv_["id"])["screens"]) == {"A"}
+    assert "step 2 of 3" in text(at)
+    at.button(key=f"rv_R01_{rv_['id']}_back1").click().run()
+    assert "step 1 of 3" in text(at)                         # back on a finished screen: stays there
+    at.run()
+    assert "step 1 of 3" in text(at)
+    at.segmented_control(key=keys[0]).set_value(6).run()     # changing an answer saves again and moves on
+    assert "step 2 of 3" in text(at)
+    assert store.get_review(rv_["id"])["answers"][keys[0].split("_", 3)[3]] == 6

@@ -7,9 +7,11 @@ optimistic version check, so a double submit or a second browser tab cannot corr
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import (JSON, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text, UniqueConstraint,
+from sqlalchemy import (JSON, event, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text, UniqueConstraint,
                         create_engine, insert, select, update)
 
 # Bump whenever a table or a Store method is added: app.py keys its cached Store on this value, so a redeploy
@@ -183,6 +185,7 @@ class Store:
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
         self.engine = create_engine(url, **kwargs)
+        event.listen(self.engine, "after_cursor_execute", _count_writes)
         metadata.create_all(self.engine)
 
     # ---- sessions
@@ -286,6 +289,22 @@ class Store:
                                                    profiles.c.ok == 1, profiles.c.pdf.is_not(None))
                             .order_by(profiles.c.id.desc())).mappings().first()
         return dict(row) if row else None
+
+    # ---- lightweight bulk reads (no PDFs, no logs): one query each, for overviews and the recruiter queue
+    def profiles_meta(self) -> dict[str, list[dict]]:
+        """session_id -> profiles (id, version, ok, approved, has_pdf), newest first."""
+        cols = (profiles.c.id, profiles.c.session_id, profiles.c.version, profiles.c.ok, profiles.c.approved,
+                profiles.c.created_at, profiles.c.pdf.is_not(None).label("has_pdf"))
+        out: dict[str, list[dict]] = {}
+        with self.engine.connect() as c:
+            for r in c.execute(select(*cols).order_by(profiles.c.id.desc())).mappings():
+                out.setdefault(r["session_id"], []).append(dict(r))
+        return out
+
+    def cvs_meta(self) -> dict[str, dict]:
+        """session_id -> {"checked": bool} for every stored CV (without the PDF)."""
+        with self.engine.connect() as c:
+            return {r[0]: {"checked": bool(r[1])} for r in c.execute(select(cvs.c.session_id, cvs.c.checked))}
 
     def get_profile(self, pid: int) -> dict | None:
         with self.engine.connect() as c:
@@ -511,3 +530,64 @@ class Store:
             "session": {k: ser(v) for k, v in (sess or {}).items()},
             "turns": [{k: ser(v) for k, v in r.items()} for r in rows],
         }, ensure_ascii=False, indent=2)
+
+
+# Process-wide reuse for the researcher view: entries are valid until ANY write happens in this process (counted
+# by a database hook below) or until SHARED_TTL seconds have passed, whichever comes first.
+_SHARED: dict = {}
+_GENERATION = [0]
+SHARED_TTL = 30
+
+
+def _count_writes(conn, cursor, statement, parameters, context, executemany):
+    if not statement.lstrip()[:6].upper() in ("SELECT", "PRAGMA"):
+        _GENERATION[0] += 1
+    trace = os.environ.get("SQL_TRACE_FILE")
+    if trace:
+        with open(trace, "a", encoding="utf-8") as f:
+            f.write(statement.split()[0] + " " + (statement.split("FROM")[1].split()[0] if "FROM" in statement else "")
+                    + "\n")
+
+
+def clear_shared() -> None:
+    _SHARED.clear()
+
+
+class RunCache:
+    """Wraps a Store for one page run: identical reads are answered once and reused within the run; any write
+    clears the reuse, so later reads in the same run see the change. A new RunCache is made for every run, so
+    nothing is ever stale across clicks. Returned objects are deep copies, so callers can modify them safely."""
+
+    READ_PREFIXES = ("get_", "list_", "export_")
+    READ_NAMES = {"profiles_meta", "cvs_meta"}
+
+    def __init__(self, store: "Store", shared_ttl: float | None = None):
+        self._store = store
+        self._memo: dict = {}
+        self._ttl = shared_ttl
+        self._url = str(store.engine.url)
+
+    def __getattr__(self, name):
+        attr = getattr(self._store, name)
+        if not callable(attr) or name == "invite_problem":
+            return attr
+        if name.startswith(self.READ_PREFIXES) or name in self.READ_NAMES:
+            def read(*args, **kwargs):
+                import copy
+                key = (name, args, tuple(sorted(kwargs.items())))
+                if key not in self._memo:
+                    hit = _SHARED.get((self._url, key)) if self._ttl else None
+                    if hit and hit[0] == _GENERATION[0] and time.monotonic() - hit[1] < self._ttl:
+                        self._memo[key] = hit[2]
+                    else:
+                        gen = _GENERATION[0]
+                        self._memo[key] = attr(*args, **kwargs)
+                        if self._ttl:
+                            _SHARED[(self._url, key)] = (gen, time.monotonic(), self._memo[key])
+                return copy.deepcopy(self._memo[key])
+            return read
+
+        def write(*args, **kwargs):
+            self._memo.clear()
+            return attr(*args, **kwargs)
+        return write

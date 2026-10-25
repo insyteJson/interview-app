@@ -26,12 +26,19 @@ def _check_password(expected: str | None) -> bool:
     return False
 
 
-def _readiness(store, sid: str, sess: dict, favs: set) -> dict:
+def _bulk(store) -> dict:
+    """Everything the overview needs, in four light queries (no PDFs)."""
+    return {"profiles": store.profiles_meta(), "cvs": store.cvs_meta(),
+            "ratings": {r["session_id"]: r for r in store.list_ratings()}}
+
+
+def _readiness(store, sid: str, sess: dict, favs: set, bulk: dict | None = None) -> dict:
     """What a session still needs before recruiters can see it."""
-    prof = store.get_approved_profile(sid)
-    profs = store.list_profiles(sid)
-    cv = store.get_cv(sid)
-    rating = store.get_rating(sid)
+    bulk = bulk or _bulk(store)
+    profs = bulk["profiles"].get(sid, [])
+    prof = next((p for p in profs if p["approved"] and p["ok"] and p["has_pdf"]), None)
+    cv = bulk["cvs"].get(sid)
+    rating = bulk["ratings"].get(sid)
     r = {"complete": sess["status"] == "complete", "approved": bool(prof), "cv": bool(cv),
          "cv_checked": bool(cv and cv["checked"]), "fav": sid in favs, "profile": prof, "profiles": profs,
          "rating": rating}
@@ -64,7 +71,8 @@ def render_admin(store, admin_password: str | None, make_generator=lambda: None,
         st.info("No sessions yet. A session appears once a participant has opened their link and agreed to take part.")
         return
     favs = store.list_favorites()
-    ready = {s["id"]: _readiness(store, s["id"], s, favs) for s in all_sessions}
+    bulk = _bulk(store)
+    ready = {s["id"]: _readiness(store, s["id"], s, favs, bulk) for s in all_sessions}
     reviews = store.list_reviews()
 
     # ---- study at a glance
@@ -77,17 +85,24 @@ def render_admin(store, admin_password: str | None, make_generator=lambda: None,
     m[3].metric("Recruiters", len(store.list_recruiters()))
     m[4].metric("Recruiter ratings", sum(x["status"] == "complete" for x in reviews))
 
-    t_sessions, t_recruiters, t_exports, t_emails = st.tabs(
-        [":material/list_alt: Sessions", ":material/groups: Recruiter study", ":material/download: Exports",
-         ":material/mail: Emails"])
-    with t_sessions:
-        _sessions_tab(store, all_sessions, favs, ready, make_generator)
-    with t_recruiters:
+    # Only the selected section is built (st.tabs would build all four on every click).
+    nav, refresh = st.columns([6, 1], vertical_alignment="center")
+    tab = nav.segmented_control("Section", ["Sessions", "Recruiter study", "Exports", "Emails"], default="Sessions",
+                                key="admin_tab", label_visibility="collapsed", required=True)
+    if refresh.button("Refresh", icon=":material/refresh:", key="admin_refresh", width="stretch",
+                      help="Data is reused for up to 30 seconds between clicks and refreshed after every save. "
+                           "Click to load everything fresh now."):
+        from storage import clear_shared
+        clear_shared()
+        st.rerun()
+    if tab == "Recruiter study":
         render_recruiter_section(store, base_url)
-    with t_exports:
+    elif tab == "Exports":
         _exports_tab(store)
-    with t_emails:
+    elif tab == "Emails":
         _emails_tab(store)
+    else:
+        _sessions_tab(store, all_sessions, favs, ready, make_generator)
 
 
 def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
@@ -106,10 +121,10 @@ def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
 
     st.divider()
     sid = st.selectbox("Open session", [s["id"] for s in rows], key="admin_sid")
-    sess = store.get_session(sid)
+    sess = next(s for s in all_sessions if s["id"] == sid)
     state = sess["state"]
-    turns = store.get_turns(sid)
-    rd = _readiness(store, sid, sess, favs)
+    turns = store.get_turns(sid) if st.session_state.get("admin_sub", "Interview") in ("Interview", "Profile") else []
+    rd = ready[sid]
 
     head, star = st.columns([3, 2], vertical_alignment="center")
     head.subheader(f"Session {sid}")
@@ -126,16 +141,17 @@ def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
     elif fav:
         st.success("In the recruiter pool.")
 
-    t_int, t_cv, t_prof, t_q = st.tabs(["Interview", "CV", "Profile", "Questionnaire"])
-    with t_int:
-        _interview_tab(store, sid, state, turns)
-    with t_cv:
+    sub = st.segmented_control("Part", ["Interview", "CV", "Profile", "Questionnaire"], default="Interview",
+                               key="admin_sub", label_visibility="collapsed", required=True)
+    if sub == "CV":
         _cv_tab(store, sid)
-    with t_prof:
+    elif sub == "Profile":
         from profile_ui import render_profile_section
         render_profile_section(store, sid, state, turns, make_generator)
-    with t_q:
+    elif sub == "Questionnaire":
         render_rating_section(store, sid)
+    else:
+        _interview_tab(store, sid, state, turns)
 
 
 def _interview_tab(store, sid: str, state: dict, rows: list[dict]) -> None:

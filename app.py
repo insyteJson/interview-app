@@ -32,7 +32,7 @@ import engine  # noqa: E402
 import roles  # noqa: E402
 import roles_ui  # noqa: E402
 from classifier import Classifier, ClassifierError  # noqa: E402
-from storage import SCHEMA_VERSION, ConflictError, Store  # noqa: E402
+from storage import SCHEMA_VERSION, ConflictError, RunCache, Store  # noqa: E402
 
 
 # ------------------------------------------------------------------ config
@@ -79,7 +79,7 @@ def consent_version(text: str) -> str:
 
 
 try:
-    store = get_store(SCHEMA_VERSION)
+    store = RunCache(get_store(SCHEMA_VERSION))     # identical reads within one click are answered once
 except Exception:  # database unreachable or misconfigured: log details, show participants nothing technical
     logging.getLogger("interview").exception("Database connection failed")
     _boot.empty()
@@ -93,6 +93,8 @@ _boot.empty()  # loading notice is done
 
 if st.query_params.get("admin"):
     from admin import render_admin
+    from storage import SHARED_TTL
+    store = RunCache(store._store, shared_ttl=SHARED_TTL)   # researcher view: reuse data across clicks
     def make_generator():
         key = cfg("ANTHROPIC_API_KEY")
         if not key:
