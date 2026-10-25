@@ -52,14 +52,16 @@ def _overview_row(s: dict, rd: dict) -> dict:
     prof = ("✓ approved" if rd["approved"] else "generated, not approved" if profs else "–")
     cv = "✓ checked" if rd["cv_checked"] else ("uploaded, not checked" if rd["cv"] else "–")
     q = rd["rating"]["status"].replace("_", " ") if rd["rating"] else "–"
-    return {"★": "★" if rd["fav"] else "", "code": s["id"], "interview": s["status"],
+    star = ("★ auto" if (rd.get("auto") or {}).get("starred") == 1 else "★") if rd["fav"] else ""
+    return {"★": star, "code": s["id"], "interview": s["status"],
             "roles": len(state.get("positions") or []), "situations": len(state.get("incidents") or []),
             "profile": prof, "CV": cv, "questionnaire": q,
             "ready for recruiters": "✓" if rd["fav"] and rd["ready"] else ("★ not ready" if rd["fav"] else ""),
             "last activity": s["updated_at"]}
 
 
-def render_admin(store, admin_password: str | None, make_generator=lambda: None, base_url: str | None = None) -> None:
+def render_admin(store, admin_password: str | None, make_generator=lambda: None, base_url: str | None = None,
+                 cfg=None) -> None:
     st.markdown("<style>.block-container, [data-testid='stMainBlockContainer'] {max-width: 1400px;}</style>",
                 unsafe_allow_html=True)
     st.title("Researcher view")
@@ -70,9 +72,19 @@ def render_admin(store, admin_password: str | None, make_generator=lambda: None,
     if not all_sessions:
         st.info("No sessions yet. A session appears once a participant has opened their link and agreed to take part.")
         return
+    import autostar
+    try:
+        newly = autostar.evaluate_all(store)        # backstop for the check that runs when a CV is submitted
+        if newly:
+            st.toast(f"★ {newly} session(s) starred automatically.")
+    except Exception:
+        st.warning("The automatic ★ check failed; stars can still be set by hand.")
+    auto = store.list_auto_decisions()
     favs = store.list_favorites()
     bulk = _bulk(store)
     ready = {s["id"]: _readiness(store, s["id"], s, favs, bulk) for s in all_sessions}
+    for sid, r in ready.items():
+        r["auto"] = auto.get(sid)
     reviews = store.list_reviews()
 
     # ---- study at a glance
@@ -102,10 +114,27 @@ def render_admin(store, admin_password: str | None, make_generator=lambda: None,
     elif tab == "Emails":
         _emails_tab(store)
     else:
-        _sessions_tab(store, all_sessions, favs, ready, make_generator)
+        _sessions_tab(store, all_sessions, favs, ready, make_generator, cfg)
 
 
-def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
+def _sessions_tab(store, all_sessions, favs, ready, make_generator, cfg=None) -> None:
+    import autostar
+    _notify_box(cfg)
+    st.caption(f"★ auto: starred automatically when the CV was submitted, because the interview has at least "
+               f"{autostar.MIN_SITUATIONS} situations from at least {autostar.MIN_ROLES} roles. A star you remove is "
+               "never added back. Recruiters only see starred sessions once the profile is approved and the CV is "
+               "checked.")
+    existing = [sid for sid, r in ready.items() if (r.get("auto") or {}).get("starred") == -1]
+    if existing:
+        with st.expander(f"{len(existing)} session(s) were finished before automatic ★ was switched on and were "
+                         "left as they were"):
+            st.markdown("Apply the rule to them? Sessions that meet it get a ★; stars you already set stay. "
+                        "Sessions that do not meet it are not unstarred.")
+            st.caption(", ".join(sorted(existing)))
+            if st.button("Apply the rule to these sessions", key="auto_apply"):
+                n, k = autostar.apply_to_existing(store)
+                st.success(f"Checked {k} session(s), starred {n}.")
+                st.rerun()
     show = st.segmented_control("Show", ["All", "★ Favourites", "Ready for recruiters"], default="All",
                                 key="admin_filter", label_visibility="collapsed")
     rows = sorted(all_sessions, key=lambda s: s["id"] not in favs)       # favourites first, stable otherwise
@@ -126,6 +155,7 @@ def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
     turns = store.get_turns(sid) if st.session_state.get("admin_sub", "Interview") in ("Interview", "Profile") else []
     rd = ready[sid]
 
+    import autostar
     head, star = st.columns([3, 2], vertical_alignment="center")
     head.subheader(f"Session {sid}")
     fav = star.toggle("★ Favourite (use for recruiters)", value=sid in favs, key=f"fav_{sid}")
@@ -135,6 +165,10 @@ def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
     checks = [("Interview complete", rd["complete"]), ("Profile approved (Profile tab, step 4)", rd["approved"]),
               ("CV checked by hand (CV tab)", rd["cv_checked"])]
     st.markdown("  ".join(f"{'✅' if ok else '⬜'} {label}" for label, ok in checks))
+    a = rd.get("auto")
+    if a and a["session_id"] != autostar.BASELINE and a["starred"] in (0, 1):
+        verdict = "starred automatically" if a["starred"] == 1 else "not starred automatically"
+        st.caption(f"Automatic ★: {verdict} on {a['decided_at']:%d.%m.%Y %H:%M} UTC ({a['reason']}).")
     if fav and not rd["ready"]:
         st.warning("★ but not ready, so recruiters do not see it yet: it needs a complete interview, an approved "
                    "profile and a CV marked as checked.")
@@ -152,6 +186,31 @@ def _sessions_tab(store, all_sessions, favs, ready, make_generator) -> None:
         render_rating_section(store, sid)
     else:
         _interview_tab(store, sid, state, turns)
+
+
+def _notify_box(cfg) -> None:
+    import notify
+    s = notify.settings(cfg) if cfg else None
+    label = (f"Email when a session is starred: on, to {s['to']}" if s else
+             "Email when a session is starred: off (not configured)")
+    with st.expander(label, icon=":material/mail:"):
+        if not s:
+            st.markdown("Add to the app's secrets, then restart the app:")
+            st.code('NOTIFY_EMAIL_TO = "you@gmail.com"\nSMTP_PASSWORD = "your 16-character Gmail app password"',
+                    language="toml")
+            st.caption("Gmail: Google account → Security → 2-Step Verification → App passwords. Other providers: "
+                       "also set SMTP_HOST, SMTP_PORT and SMTP_USER.")
+            return
+        st.caption(f"Sent from {s['user']} via {s['host']}:{s['port']}. Contains only the participant code and "
+                   "counts.")
+        if st.button("Send a test email now", key="notify_test"):
+            msg = notify.star_message(s, "TEST", "this is a test")
+            msg.replace_header("Subject", "Test: interview app notifications work")
+            try:
+                notify.send(s, msg)
+                st.success(f"Sent to {s['to']}. Check your inbox (and the spam folder).")
+            except Exception as exc:
+                st.error(f"Could not send: {type(exc).__name__}: {str(exc)[:200]}")
 
 
 def _interview_tab(store, sid: str, state: dict, rows: list[dict]) -> None:

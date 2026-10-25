@@ -16,7 +16,7 @@ from sqlalchemy import (JSON, event, Column, DateTime, Integer, LargeBinary, Met
 
 # Bump whenever a table or a Store method is added: app.py keys its cached Store on this value, so a redeploy
 # builds a fresh Store (and creates new tables) instead of reusing one created by the previous code.
-SCHEMA_VERSION = "2026-10-24.review-v1"
+SCHEMA_VERSION = "2026-10-25.autostar-v1"
 
 metadata = MetaData()
 
@@ -116,6 +116,16 @@ favorites = Table(
     "favorites", metadata,
     Column("session_id", String(40), primary_key=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+# Automatic starring: one row per session the rule has looked at, so a session is judged once and a star you
+# remove by hand is never put back. "__baseline__" marks when the rule was switched on.
+auto_stars = Table(
+    "auto_stars", metadata,
+    Column("session_id", String(40), primary_key=True),
+    Column("starred", Integer, nullable=False),            # 1 = starred by the rule, 0 = did not qualify, -1 = existing
+    Column("reason", Text),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
 )
 
 recruiters = Table(
@@ -376,6 +386,15 @@ class Store:
     def list_favorites(self) -> set[str]:
         with self.engine.connect() as c:
             return {r[0] for r in c.execute(select(favorites.c.session_id))}
+
+    def list_auto_decisions(self) -> dict[str, dict]:
+        with self.engine.connect() as c:
+            return {r["session_id"]: dict(r) for r in c.execute(select(auto_stars)).mappings()}
+
+    def record_auto_decision(self, sid: str, starred: int, reason: str) -> None:
+        with self.engine.begin() as c:
+            c.execute(auto_stars.delete().where(auto_stars.c.session_id == sid))
+            c.execute(insert(auto_stars).values(session_id=sid, starred=starred, reason=reason, decided_at=_now()))
 
     # ---- invites and recruiters
     def create_invite(self, created_by: str, days: int = 14) -> str:

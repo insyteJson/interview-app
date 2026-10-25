@@ -102,7 +102,7 @@ if st.query_params.get("admin"):
         from profile_gen import ProfileGenerator
         return ProfileGenerator(api_key=key, model=MODEL, effort=EFFORT)
     render_admin(store, cfg("ADMIN_PASSWORD"), st.session_state.get("_generator_override") or make_generator,
-                 base_url=cfg("APP_URL"))
+                 base_url=cfg("APP_URL"), cfg=cfg)
     st.stop()
 
 
@@ -251,6 +251,15 @@ def cv_step(first: bool = False) -> None:
     c1, c2 = st.columns(2)
     if c1.button("Submit this CV", type="primary", disabled=not ok):
         store.save_cv(code, prev.pdf, cv.storable_report(rep))
+        try:                                     # auto-★ for the recruiter pool; must never disturb the participant
+            import autostar
+            if autostar.evaluate(store, code):
+                import notify
+                reason = store.list_auto_decisions().get(code, {}).get("reason", "")
+                s = notify.settings(cfg)
+                notify.send_in_background(s, notify.star_message(s, code, reason) if s else None)
+        except Exception:
+            logging.getLogger("interview").exception("Auto-star check failed")
         st.session_state.pop("cv_result", None)
         st.rerun()
     if c2.button("Start over"):
