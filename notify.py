@@ -76,3 +76,55 @@ def send_in_background(s: dict | None, msg: EmailMessage) -> threading.Thread | 
     t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
+
+
+def diagnose(s: dict, timeout: float = 15) -> list[tuple[str, bool, str]]:
+    """Walks through the connection step by step and reports where it stops: reach the server, encrypt, log in,
+    send. Tries port 587 (STARTTLS) and, if that cannot connect, port 465 (SSL)."""
+    import socket
+    steps: list[tuple[str, bool, str]] = []
+    ports = [s["port"]] + ([465] if s["port"] == 587 else [])
+    for port in ports:
+        try:
+            with socket.create_connection((s["host"], port), timeout=timeout):
+                pass
+            steps.append((f"Reach {s['host']}:{port}", True, ""))
+        except Exception as exc:
+            steps.append((f"Reach {s['host']}:{port}", False, f"{type(exc).__name__}: {exc}"))
+            continue
+        try:
+            if port == 465:
+                smtp = smtplib.SMTP_SSL(s["host"], port, timeout=timeout, context=ssl.create_default_context())
+                steps.append(("Encrypted connection (SSL)", True, ""))
+            else:
+                smtp = smtplib.SMTP(s["host"], port, timeout=timeout)
+                smtp.ehlo()
+                if smtp.has_extn("starttls"):
+                    smtp.starttls(context=ssl.create_default_context())
+                    smtp.ehlo()
+                    steps.append(("Encrypted connection (STARTTLS)", True, ""))
+        except Exception as exc:
+            steps.append(("Encrypted connection", False, f"{type(exc).__name__}: {exc}"))
+            continue
+        try:
+            if smtp.has_extn("auth"):
+                smtp.login(s["user"], s["password"])
+            steps.append((f"Log in as {s['user']}", True, ""))
+        except smtplib.SMTPAuthenticationError as exc:
+            steps.append((f"Log in as {s['user']}", False, "The server rejected the login: check SMTP_PASSWORD "
+                          "(Gmail needs an app password) and SMTP_USER. " + str(exc.smtp_error[:120])))
+            return steps
+        except Exception as exc:
+            steps.append((f"Log in as {s['user']}", False, f"{type(exc).__name__}: {exc}"))
+            return steps
+        try:
+            msg = star_message(s, "TEST", "this is a test")
+            msg.replace_header("Subject", "Test: interview app notifications work")
+            smtp.send_message(msg)
+            smtp.quit()
+            steps.append(("Send the test email", True, f"sent to {s['to']}" +
+                          (f" · works on port {port}: set SMTP_PORT = \"{port}\"" if port != s["port"] else "")))
+        except Exception as exc:
+            steps.append(("Send the test email", False, f"{type(exc).__name__}: {exc}"))
+        return steps
+    return steps

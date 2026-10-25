@@ -81,3 +81,16 @@ def test_cv_hook_sends_only_when_starred(smtp, tmp_path, monkeypatch):
             reason = store.list_auto_decisions()[sid]["reason"]
             notify.send_in_background(s, notify.star_message(s, sid, reason)).join(10)
     assert len(smtp.messages) == 1 and "P20" in smtp.messages[0]
+
+
+def test_diagnose_reports_each_step(smtp):
+    s = notify.settings(cfg_from(CFG))
+    steps = notify.diagnose(s)
+    assert [ok for _, ok, _ in steps] == [True, True, True] and steps[-1][0] == "Send the test email"
+    assert len(smtp.messages) == 1
+
+
+def test_diagnose_shows_where_it_stops():
+    s = notify.settings(cfg_from({**CFG, "SMTP_PORT": "8999"}))
+    steps = notify.diagnose(s, timeout=3)
+    assert steps[0][0].startswith("Reach") and steps[0][1] is False

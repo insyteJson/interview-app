@@ -204,13 +204,16 @@ def _notify_box(cfg) -> None:
         st.caption(f"Sent from {s['user']} via {s['host']}:{s['port']}. Contains only the participant code and "
                    "counts.")
         if st.button("Send a test email now", key="notify_test"):
-            msg = notify.star_message(s, "TEST", "this is a test")
-            msg.replace_header("Subject", "Test: interview app notifications work")
-            try:
-                notify.send(s, msg)
-                st.success(f"Sent to {s['to']}. Check your inbox (and the spam folder).")
-            except Exception as exc:
-                st.error(f"Could not send: {type(exc).__name__}: {str(exc)[:200]}")
+            with st.spinner("Testing step by step…"):
+                steps = notify.diagnose(s)
+            for label, ok, detail in steps:
+                (st.success if ok else st.error)(f"{'✓' if ok else '✗'} {label}" + (f" · {detail}" if detail else ""))
+            if steps and all(ok for _, ok, _ in steps) and steps[-1][0] == "Send the test email":
+                st.caption("Check your inbox (and the spam folder).")
+            elif steps and not any(ok for label, ok, _ in steps if label.startswith("Reach")):
+                st.warning("The app cannot reach the mail server at all, so the hosting probably blocks outgoing "
+                           "mail. Tell Claude: the fallback is a notification service that works over normal web "
+                           "connections.")
 
 
 def _interview_tab(store, sid: str, state: dict, rows: list[dict]) -> None:
