@@ -139,7 +139,7 @@ def storable_report(report: dict) -> dict:
 
 
 def redact_more(data: bytes, terms_text: str) -> CvResult:
-    """Researcher's later blackout on an already anonymised CV: blacks out further terms on top of what is already
+    """Researcher's later blackout on an already anonymised CV or interview resume: blacks out further terms on top of what is already
     blacked out (earlier blackouts can never be undone, since the PDF itself is changed). Only the given terms are
     blacked out; the automatic contact patterns are not re-run, because they also match date ranges.
     Reports matches per term for the preview; the terms themselves are never stored."""
@@ -149,7 +149,7 @@ def redact_more(data: bytes, terms_text: str) -> CvResult:
     for page in doc:
         n = 0
         for t in terms:
-            for rect in page.search_for(t):
+            for rect in page.search_for(t, flags=SEARCH_FLAGS):
                 page.add_redact_annot(rect, fill=(0, 0, 0))
                 found[t] += 1
                 n += 1
@@ -158,9 +158,20 @@ def redact_more(data: bytes, terms_text: str) -> CvResult:
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
     check = pymupdf.open(stream=out, filetype="pdf")
-    remaining = "\n".join(p.get_text() for p in check).lower()
+    remaining = _flat(" ".join(p.get_text(flags=SEARCH_FLAGS) for p in check))
     previews = [p.get_pixmap(dpi=75).tobytes("png") for p in check]
     check.close()
     return CvResult(pdf=out, previews=previews, report={
         "per_term": found,
-        "leftovers": [t for t in terms if t.lower() in remaining]})
+        "leftovers": [t for t in terms if _flat(t) in remaining]})
+
+
+# Search and the leftover check read ligatures as letters ("ﬁ" -> "fi") and every kind of space as a space, so a
+# term is neither missed in the blackout nor in the check because the PDF stores "ﬁt" or a non-breaking space.
+SEARCH_FLAGS = pymupdf.TEXT_DEHYPHENATE | pymupdf.TEXT_MEDIABOX_CLIP
+
+
+def _flat(text: str) -> str:
+    """Lower case, ligatures expanded, all whitespace (line breaks, non-breaking spaces) as one space."""
+    lig = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st", "\u2011": "-"}
+    return " ".join("".join(lig.get(ch, ch) for ch in text).split()).lower()

@@ -18,7 +18,7 @@ from sqlalchemy import (JSON, event, Column, DateTime, Integer, LargeBinary, Met
 # builds a fresh Store (and creates new tables) instead of reusing one created by the previous code.
 # As a safety net, app.py also adds a fingerprint of this file to the key (STORE_CODE_FINGERPRINT), so a forgotten
 # bump can no longer leave the app running on an outdated Store.
-SCHEMA_VERSION = "2026-10-26.cv-blackout-v1"
+SCHEMA_VERSION = "2026-10-26.profile-blackout-v1"
 
 
 def _fingerprint() -> str:
@@ -343,6 +343,22 @@ class Store:
         """session_id -> {"checked": bool} for every stored CV (without the PDF)."""
         with self.engine.connect() as c:
             return {r[0]: {"checked": bool(r[1])} for r in c.execute(select(cvs.c.session_id, cvs.c.checked))}
+
+    def replace_profile_pdfs(self, sid: str, pdfs: dict[int, bytes], matches: int) -> None:
+        """A later blackout by the researcher on the interview resume: replaces the PDF of the given stored versions
+        (same ids, so ratings stay attached), counts rounds and matches in each version's log (never the terms).
+        Approval is kept: the content is not changed, words are only blacked out."""
+        with self.engine.begin() as c:
+            for pid, pdf in pdfs.items():
+                row = c.execute(select(profiles.c.log).where(profiles.c.id == pid,
+                                                             profiles.c.session_id == sid)).mappings().first()
+                if row is None:
+                    continue
+                log = dict(row["log"] or {})
+                later = dict(log.get("researcher_blackouts") or {"rounds": 0, "matches": 0})
+                log["researcher_blackouts"] = {"rounds": later["rounds"] + 1, "matches": later["matches"] + matches,
+                                               "last": _now().isoformat()}
+                c.execute(update(profiles).where(profiles.c.id == pid).values(pdf=pdf, log=log))
 
     def get_profile(self, pid: int) -> dict | None:
         with self.engine.connect() as c:

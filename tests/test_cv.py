@@ -102,3 +102,17 @@ def test_later_blackout_leaves_dates_alone():
     out = cv.redact_more(first, "Acme Robotics").pdf
     after = _text(out)
     assert sum(ch.isdigit() for ch in after) == sum(ch.isdigit() for ch in before)   # no digits removed
+
+
+def test_redact_more_finds_terms_behind_ligatures_and_line_breaks():
+    import pymupdf
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_htmlbox(pymupdf.Rect(50, 50, 200, 300),
+                        "<p>Stay fit in the office. Worked at Universitätsmedizin Göttingen for a while.</p>")
+    data = doc.tobytes()
+    res = cv.redact_more(data, "office\nUniversitätsmedizin Göttingen")
+    assert res.report["per_term"]["office"] >= 1 and res.report["per_term"]["Universitätsmedizin Göttingen"] >= 1
+    assert res.report["leftovers"] == []
+    flat = cv._flat(" ".join(p.get_text(flags=cv.SEARCH_FLAGS) for p in pymupdf.open(stream=res.pdf, filetype="pdf")))
+    assert "office" not in flat and "göttingen" not in flat and "stay fit" in flat

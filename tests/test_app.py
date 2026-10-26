@@ -271,3 +271,63 @@ def test_admin_later_cv_blackout_in_two_rounds(tmp_path, monkeypatch):
     assert "Acme" not in text and "Heidelberg" not in text and "Product Owner" in text
     assert store.get_cv("P01")["report"]["researcher_blackouts"]["rounds"] == 2
     st.cache_resource.clear()
+
+
+def test_admin_later_resume_blackout_all_versions_keeps_ids_and_approval(tmp_path, monkeypatch):
+    import streamlit as st
+    import pymupdf
+    from storage import Store
+    sys.path.insert(0, os.path.join(APP_DIR, "tests"))
+    import test_profile as tp
+    import profile_gen as pg
+
+    st.cache_resource.clear()
+    url = f"sqlite:///{tmp_path}/pb.db"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+    monkeypatch.chdir(APP_DIR)
+    store = Store(url)
+    state = dict(tp.P01_STATE, turn=8, pos_idx=3, phase="done", dimension=None, level=None, model="m",
+                 prompt_version="t")
+    base = {"rule": "r", "phase_before": "prompt", "meta": None, "accepted": 0, "declined": 0, "audit": "",
+            "audit_note": ""}
+    store.create_session("P01", state, dict(base, turn=0, answer_raw="", question_shown="start", qid="Q_ROLES",
+                                             classification=None))
+    for k, t in enumerate(tp._p01_turns(), start=1):
+        store.save_turn("P01", k, state, dict(base, turn=t["turn"], answer_raw=t["answer_raw"],
+                                              question_shown=t["question_shown"], qid=t["qid"],
+                                              classification=t["classification"]))
+    store.save_redaction("P01", "Anna => a colleague")
+    store.save_merges("P01", [["i01", "i02"]])
+    res, _ = tp._p01_profile()
+    pdf = pg.render_pdf(res["profile"])
+    old = store.add_profile("P01", pg.PROFILE_VERSION, True, "first", res["profile"], res["log"], pdf)
+    store.approve_profile(old, True)
+    new = store.add_profile("P01", pg.PROFILE_VERSION, True, "second", res["profile"], res["log"], pdf)
+    store.approve_profile(new, True)
+
+    at = AppTest.from_file(os.path.join(APP_DIR, "app.py"), default_timeout=60)
+    at.query_params["admin"] = "1"
+    at.run()
+    at.text_input(key="admin_pw").input("pw").run()
+    at.segmented_control(key="admin_sub").set_value("Profile").run()
+    assert not at.exception, at.exception
+    for term in ("Göttingen", "Stay fit"):                     # "fit" is stored as the ligature "ﬁt" in the PDF
+        at.text_area(key="profmore_P01_terms").input(term).run()
+        at.button(key="profmore_P01_go").click().run()
+        assert not at.exception, at.exception
+        assert not at.error, [e.value for e in at.error]       # nothing left readable
+        at.button(key="profmore_P01_save").click().run()
+        assert not at.exception, at.exception
+    for pid in (old, new):
+        p = store.get_profile(pid)
+        text = " ".join(pg_page.get_text(flags=pymupdf.TEXT_DEHYPHENATE) for pg_page in
+                        pymupdf.open(stream=p["pdf"], filetype="pdf"))
+        assert "Göttingen" not in text and "Stay fit" not in text and "Dance teacher" in text
+        assert p["approved"] == 1 and p["log"]["researcher_blackouts"]["rounds"] == 2
+    assert store.get_approved_profile("P01")["id"] == new          # same ids: ratings stay attached
+    rules = store.get_redaction("P01")["rules"]
+    assert rules.splitlines() == ["Anna => a colleague", "Göttingen => [removed]", "Stay fit => [removed]"]
+    assert at.text_area(key="rules_P01").value == rules            # Step 1 shows the added rules, still saved
+    assert not any("differ from the saved redaction" in w.value for w in at.warning)
+    st.cache_resource.clear()
