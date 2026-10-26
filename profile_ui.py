@@ -242,16 +242,15 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
         store.approve_profile(latest["id"], approved)
         st.rerun()
 
-    # ---------------- step 5: output
+    # ---------------- step 5: output (saved resume on the left, "black out more" on the right, as in the CV tab)
     st.markdown("**Step 5 · Output**")
-    for k, png in enumerate(_preview_pngs(latest["pdf"]), 1):
-        st.image(png, caption=f"Profile page {k}", width="stretch")
     c1, c2, c3 = st.columns(3)
     c1.download_button("Profile PDF", latest["pdf"], file_name=f"{sid} - profile.pdf", mime="application/pdf",
-                       disabled=not latest["approved"], key=f"dlp_{sid}")
+                       disabled=not latest["approved"], key=f"dlp_{sid}", width="stretch")
     c2.download_button("Profile JSON + generation log",
                        json.dumps({"profile": prof, "log": log}, ensure_ascii=False, indent=2),
-                       file_name=f"{sid} - profile and log.json", mime="application/json", key=f"dlj_{sid}")
+                       file_name=f"{sid} - profile and log.json", mime="application/json", key=f"dlj_{sid}",
+                       width="stretch")
     cv = store.get_cv(sid)
     packet_ready = bool(latest["approved"] and cv and cv["checked"])
     if packet_ready:
@@ -260,74 +259,75 @@ def render_profile_section(store, sid: str, state: dict, rows: list[dict], make_
             z.writestr(f"{sid} - profile.pdf", latest["pdf"])
             z.writestr(f"{sid} - CV.pdf", cv["pdf"])
         c3.download_button("Recruiter packet (profile + CV)", buf.getvalue(), file_name=f"{sid} - packet.zip",
-                           mime="application/zip", key=f"dlz_{sid}")
+                           mime="application/zip", key=f"dlz_{sid}", width="stretch")
     else:
         c3.caption("Packet: needs an approved profile and a CV marked as checked.")
-    _blackout_more(store, sid, profs, latest, red)
-
-
-def _blackout_more(store, sid: str, profs: list[dict], latest: dict, red: dict | None) -> None:
-    """Step 6: black out further terms (a city, an employer …) in the stored resume PDFs, like the CV tab. Applied to
-    every stored version with a PDF, so a recruiter or candidate pinned to an older version sees it too. The ids stay,
-    so ratings stay attached; approval stays, since only words are blacked out."""
-    import cv as cvmod
-    versions = [p for p in profs if p.get("pdf")]
-    st.markdown("**Step 6 · Black out more** (optional: places, employers or anything else identifying)")
-    later = (latest["log"] or {}).get("researcher_blackouts")
+    later = (log or {}).get("researcher_blackouts")
     if later:
         st.caption(f"Blacked out afterwards: {later['rounds']} round(s), {later['matches']} match(es), last "
                    f"{later['last'][:16].replace('T', ' ')} UTC.")
+    left, right = st.columns([3, 2], gap="large")
+    with right, st.container(border=True):
+        pending = _blackout_more(store, sid, profs, latest, red)
+    with left:
+        st.markdown("**Preview of the result**" if pending else "**Saved resume**")
+        for k, png in enumerate(_preview_pngs(pending["pdfs"][latest["id"]] if pending else latest["pdf"]), 1):
+            st.image(png, caption=f"Profile page {k}", width="stretch")
+
+
+def _blackout_more(store, sid: str, profs: list[dict], latest: dict, red: dict | None) -> dict | None:
+    """The "Black out more" box of Step 5: further terms (a city, an employer …) in the stored resume PDFs, like the CV
+    tab. Applied to every stored version with a PDF, so a recruiter or candidate pinned to an older version sees it
+    too. The ids stay, so ratings stay attached; approval stays, since only words are blacked out.
+    Returns the pending preview (or None), which the left column shows."""
+    import cv as cvmod
+    versions = [p for p in profs if p.get("pdf")]
     pk = f"profmore_{sid}"
     pending = st.session_state.get(pk)
     if pending and pending.get("base") != [(p["id"], len(p["pdf"])) for p in versions]:
         pending = None                                   # a new generation or save happened since the preview
         st.session_state.pop(pk, None)
-    left, right = st.columns([3, 2], gap="large")
-    with right, st.container(border=True):
-        st.caption(f"One term per line. Applied on top of the stored resume, to all {len(versions)} stored "
-                   "version(s), so everything already blacked out stays. Matching ignores upper/lower case and also "
-                   "finds the term inside longer words, so check the counts.")
-        terms = st.text_area("Terms", key=f"{pk}_terms", height=110, label_visibility="collapsed",
-                             placeholder="Heidelberg\nUniversitätsklinikum")
-        if st.button("Black out and preview", key=f"{pk}_go", type="primary", disabled=not (terms or "").strip(),
-                     width="stretch"):
-            results = {p["id"]: cvmod.redact_more(p["pdf"], terms) for p in versions}
-            st.session_state[pk] = {
-                "base": [(p["id"], len(p["pdf"])) for p in versions], "terms": terms,
-                "pdfs": {pid: r.pdf for pid, r in results.items()},
-                "per_term": results[latest["id"]].report["per_term"] if latest["id"] in results else {},
-                "total": sum(sum(r.report["per_term"].values()) for r in results.values()),
-                "leftovers": sorted({t for r in results.values() for t in r.report["leftovers"]})}
-            st.rerun()
-        if pending:
-            st.markdown(f"**Preview** of version #{latest['id']} (not saved yet)")
-            for t, n in pending["per_term"].items():
-                (st.warning if n == 0 or n > 5 else st.write)(f"{t}: {n} match(es)" +
-                                                             (" · check this is intended" if n > 5 else "") +
-                                                             (" · not found" if n == 0 else ""))
-            if pending["leftovers"]:
-                st.error("Still readable after the blackout: " + ", ".join(pending["leftovers"]))
-            add_rules = st.checkbox("Also add these terms to Step 1, so a new generation leaves them out too",
-                                    value=True, key=f"{pk}_rules")
-            c1, c2 = st.columns(2)
-            if c1.button("Save this version", key=f"{pk}_save", type="primary", disabled=pending["total"] == 0,
-                         width="stretch"):
-                store.replace_profile_pdfs(sid, pending["pdfs"], sum(pending["per_term"].values()))
-                if add_rules:
-                    _add_redaction_rules(store, sid, red, pending["terms"])
-                for k in (pk, f"{pk}_terms", f"rules_{sid}"):
-                    st.session_state.pop(k, None)
-                st.rerun()
-            if c2.button("Discard", key=f"{pk}_discard", width="stretch"):
-                st.session_state.pop(pk, None)
-                st.rerun()
-            st.caption("Saving cannot be undone. Recruiters and the candidate see the saved version from their next "
-                       "page load.")
+    st.markdown("**Black out more**")
+    st.caption(f"One term per line (places, employers, project names …). It is applied on top of the saved resume, "
+               f"to all {len(versions)} stored version(s), so everything already blacked out stays. Matching ignores "
+               "upper/lower case and also finds the term inside longer words, so check the counts.")
+    terms = st.text_area("Terms", key=f"{pk}_terms", height=120, label_visibility="collapsed",
+                         placeholder="Heidelberg\nUniversitätsklinikum")
+    if st.button("Black out and preview", key=f"{pk}_go", type="primary", disabled=not (terms or "").strip(),
+                 width="stretch"):
+        results = {p["id"]: cvmod.redact_more(p["pdf"], terms) for p in versions}
+        st.session_state[pk] = {
+            "base": [(p["id"], len(p["pdf"])) for p in versions], "terms": terms,
+            "pdfs": {pid: r.pdf for pid, r in results.items()},
+            "per_term": results[latest["id"]].report["per_term"] if latest["id"] in results else {},
+            "total": sum(sum(r.report["per_term"].values()) for r in results.values()),
+            "leftovers": sorted({t for r in results.values() for t in r.report["leftovers"]})}
+        st.rerun()
     if pending:
-        with left:
-            st.markdown("**Preview of the result**")
-            for k, png in enumerate(_preview_pngs(pending["pdfs"][latest["id"]]), 1):
-                st.image(png, caption=f"Page {k}", width="stretch")
+        st.markdown("**Preview** (not saved yet)")
+        for t, n in pending["per_term"].items():
+            (st.warning if n == 0 or n > 5 else st.write)(f"{t}: {n} match(es)" +
+                                                         (" · check this is intended" if n > 5 else "") +
+                                                         (" · not found" if n == 0 else ""))
+        if pending["leftovers"]:
+            st.error("Still readable after the blackout: " + ", ".join(pending["leftovers"]))
+        add_rules = st.checkbox("Also add these terms to Step 1, so a new generation leaves them out too",
+                                value=True, key=f"{pk}_rules")
+        c1, c2 = st.columns(2)
+        if c1.button("Save this version", key=f"{pk}_save", type="primary", disabled=pending["total"] == 0,
+                     width="stretch"):
+            store.replace_profile_pdfs(sid, pending["pdfs"], sum(pending["per_term"].values()))
+            if add_rules:
+                _add_redaction_rules(store, sid, red, pending["terms"])
+            for k in (pk, f"{pk}_terms", f"rules_{sid}"):
+                st.session_state.pop(k, None)
+            st.rerun()
+        if c2.button("Discard", key=f"{pk}_discard", width="stretch"):
+            st.session_state.pop(pk, None)
+            st.rerun()
+        st.caption("Saving cannot be undone. Recruiters and the candidate see the saved version from their next "
+                   "page load.")
+    return pending
 
 
 def _add_redaction_rules(store, sid: str, red: dict | None, terms_text: str) -> None:
