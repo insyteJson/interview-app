@@ -17,7 +17,9 @@ import streamlit as st
 
 st.set_page_config(page_title="Interview", page_icon="\U0001F4AC", layout="centered")
 st.markdown(
-    "<style>#MainMenu{visibility:hidden} footer{visibility:hidden} [data-testid='stToolbar']{display:none}</style>",
+    "<style>#MainMenu{visibility:hidden} footer{visibility:hidden} [data-testid='stToolbar']{display:none} "
+    "[data-testid='stHeader'],[data-testid='stDecoration']{display:none !important} "
+    "[data-testid='stMainBlockContainer'],.block-container{padding-top:1.5rem !important}</style>",
     unsafe_allow_html=True,
 )
 
@@ -110,7 +112,7 @@ if st.query_params.get("admin"):
 
 if st.query_params.get("review"):
     from review import render_review
-    render_review(store, st.query_params.get("review"), cfg("APP_URL"))
+    render_review(store, st.query_params.get("review"), cfg("APP_URL"), cfg=cfg)
     st.stop()
 
 

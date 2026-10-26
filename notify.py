@@ -24,7 +24,8 @@ log = logging.getLogger("interview")
 
 def settings(cfg) -> dict | None:
     to = (cfg("NOTIFY_EMAIL_TO") or "").strip()
-    pw = (cfg("SMTP_PASSWORD") or "").strip()
+    # app passwords are shown in groups ("abcd efgh ..."); copied text may carry normal or non-breaking spaces
+    pw = "".join(str(cfg("SMTP_PASSWORD") or "").split())
     if not to or not pw:
         return None
     return {"to": to, "user": (cfg("SMTP_USER") or to).strip(), "password": pw,
@@ -114,6 +115,10 @@ def diagnose(s: dict, timeout: float = 15) -> list[tuple[str, bool, str]]:
             steps.append((f"Log in as {s['user']}", False, "The server rejected the login: check SMTP_PASSWORD "
                           "(Gmail needs an app password) and SMTP_USER. " + str(exc.smtp_error[:120])))
             return steps
+        except smtplib.SMTPServerDisconnected as exc:
+            steps.append((f"Log in as {s['user']} (port {port})", False,
+                          f"{type(exc).__name__}: {exc}. Gmail usually does this when it does not accept the login."))
+            continue                                   # try the other port before giving up
         except Exception as exc:
             steps.append((f"Log in as {s['user']}", False, f"{type(exc).__name__}: {exc}"))
             return steps
@@ -128,3 +133,46 @@ def diagnose(s: dict, timeout: float = 15) -> list[tuple[str, bool, str]]:
             steps.append(("Send the test email", False, f"{type(exc).__name__}: {exc}"))
         return steps
     return steps
+
+
+def recruiter_finished_message(s: dict, rec: dict, reviews: list[dict], csv_text: str) -> EmailMessage:
+    """Summary of one recruiter's ratings when they reach the thank-you page, with all answers as CSV."""
+    import statistics as stx
+
+    def mean(a, keys):
+        vals = [a.get(k) for k in keys if isinstance(a.get(k), (int, float))]
+        return f"{stx.mean(vals):.1f}" if vals else "–"
+
+    done = [r for r in reviews if r["status"] == "complete"]
+    skipped = sum(r["status"] == "skipped" for r in reviews)
+    lines = [f"{rec['code']} reached the thank-you page.", "",
+             f"Recruiter: {rec['code']} · invited by {rec.get('invited_by') or '–'} · experience "
+             f"{rec.get('experience') or '–'} · domain {rec.get('domain') or '–'}"]
+    if rec.get("comment"):
+        lines.append(f"Comment: {rec['comment']}")
+    lines += [f"Candidates rated: {len(done)}" + (f" (skipped as recognised: {skipped})" if skipped else ""), "",
+              "Per candidate, resume / CV (1-7; usefulness and coverage are means of 4 items each):"]
+    for r in done:
+        a = r["answers"] or {}
+        secs = sum((v or {}).get("seconds") or 0 for v in (r["screens"] or {}).values())
+        pref = {"profile": "resume", "cv": "CV", "equal": "equal"}.get(a.get("pref_doc"), a.get("pref_doc") or "–")
+        lines.append(
+            f"- {r['session_id']} ({'resume' if r['doc_order'] == 'profile-first' else 'CV'} first): usefulness "
+            f"{mean(a, [f'profile_u{i}' for i in range(1, 5)])} / {mean(a, [f'cv_u{i}' for i in range(1, 5)])} · "
+            f"coverage {mean(a, [f'profile_c{i}' for i in range(1, 5)])} / "
+            f"{mean(a, [f'cv_c{i}' for i in range(1, 5)])} · rely {a.get('profile_r1', '–')} / {a.get('cv_r1', '–')}"
+            f" · distinguish {a.get('profile_r2', '–')} / {a.get('cv_r2', '–')} · prefers {pref} · "
+            f"{secs / 60:.1f} min")
+        if a.get("missing"):
+            lines.append(f"    missing in both: {a['missing']}")
+    lines += ["", "All answers are attached as CSV (same columns as the export in the researcher view)."]
+    if s.get("admin_url"):
+        lines.append(f"Researcher view: {s['admin_url']}")
+    msg = EmailMessage()
+    msg["Subject"] = f"{rec['code']} finished: {len(done)} candidate{'s' if len(done) != 1 else ''} rated"
+    msg["From"] = s["user"]
+    msg["To"] = s["to"]
+    msg.set_content("\n".join(lines) + "\n\n— Interview app")
+    msg.add_attachment(csv_text.encode("utf-8"), maintype="text", subtype="csv",
+                       filename=f"{rec['code']} - ratings.csv")
+    return msg

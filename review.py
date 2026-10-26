@@ -236,7 +236,7 @@ CSS = """
 @media (min-width: 641px) {
   [data-testid="stHorizontalBlock"]:has([class*="st-key-docpane"]) {align-items: flex-start;}
   [data-testid="stColumn"]:has(> div [class*="st-key-docpane"]):not(:has([class*="st-key-docpanecmp"])) {
-      position: sticky; top: 3.2rem;}
+      position: sticky; top: 1rem;}
 }
 .st-key-rv_consenttext {height: 46vh; overflow-y: auto; border: 1px solid #d9dee3; border-radius: 10px;
     padding: 4px 18px; background: #fafbfc;}
@@ -399,7 +399,12 @@ def _tour_dialog(code: str) -> None:
 
 # ------------------------------------------------------------------ pages
 
-def render_review(store, param: str, base_url: str | None = None) -> None:
+_CFG = None          # the app's settings reader, for the email to the researcher
+
+
+def render_review(store, param: str, base_url: str | None = None, cfg=None) -> None:
+    global _CFG
+    _CFG = cfg
     st.markdown(CSS, unsafe_allow_html=True)
     param = (param or "").strip()
     if param.startswith("inv-"):
@@ -801,9 +806,33 @@ def _signup(store, code: str) -> None:
             st.rerun()
 
 
+def _report_finish(store, rec: dict, done: int) -> None:
+    """Emails the researcher this recruiter's ratings, once per finish (a later finish with more candidates sends an
+    updated email). Runs in the background; a failure never reaches the recruiter."""
+    key = f"rv_{rec['code']}_mailed"
+    if not _CFG or done == 0 or st.session_state.get(key) == done:
+        return
+    st.session_state[key] = done
+    try:
+        import notify
+        s = notify.settings(_CFG)
+        if not s:
+            return
+        import admin
+        table = admin.reviews_table(store)
+        csv_text = table[table["recruiter"] == rec["code"]].to_csv(index=False) if len(table) else ""
+        fresh = store.get_recruiter(rec["code"]) or rec
+        notify.send_in_background(s, notify.recruiter_finished_message(
+            s, fresh, store.list_reviews(recruiter=rec["code"]), csv_text))
+    except Exception:
+        import logging
+        logging.getLogger("interview").exception("Finish email could not be prepared")
+
+
 def _thanks(store, rec: dict, base_url, all_done: bool = False) -> None:
     code = rec["code"]
     done = completed(store, code)
+    _report_finish(store, rec, done)
     _scroll_top_on_change("thanks")
     with st.container(key="rv_narrow"), st.container(key="rv_end"):
         html("<div class='rv-hero'><div class='big'>💚</div>"
