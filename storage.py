@@ -16,7 +16,21 @@ from sqlalchemy import (JSON, event, Column, DateTime, Integer, LargeBinary, Met
 
 # Bump whenever a table or a Store method is added: app.py keys its cached Store on this value, so a redeploy
 # builds a fresh Store (and creates new tables) instead of reusing one created by the previous code.
-SCHEMA_VERSION = "2026-10-25.autostar-v1"
+# As a safety net, app.py also adds a fingerprint of this file to the key (STORE_CODE_FINGERPRINT), so a forgotten
+# bump can no longer leave the app running on an outdated Store.
+SCHEMA_VERSION = "2026-10-26.cv-blackout-v1"
+
+
+def _fingerprint() -> str:
+    import hashlib
+    try:
+        with open(__file__, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:12]
+    except OSError:
+        return "unknown"
+
+
+STORE_CODE_FINGERPRINT = _fingerprint()
 
 metadata = MetaData()
 

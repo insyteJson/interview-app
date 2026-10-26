@@ -34,7 +34,7 @@ import engine  # noqa: E402
 import roles  # noqa: E402
 import roles_ui  # noqa: E402
 from classifier import Classifier, ClassifierError  # noqa: E402
-from storage import SCHEMA_VERSION, ConflictError, RunCache, Store  # noqa: E402
+from storage import SCHEMA_VERSION, STORE_CODE_FINGERPRINT, ConflictError, RunCache, Store  # noqa: E402
 
 
 # ------------------------------------------------------------------ config
@@ -81,7 +81,7 @@ def consent_version(text: str) -> str:
 
 
 try:
-    store = RunCache(get_store(SCHEMA_VERSION))     # identical reads within one click are answered once
+    store = RunCache(get_store(f"{SCHEMA_VERSION}+{STORE_CODE_FINGERPRINT}"))     # identical reads within one click are answered once
 except Exception:  # database unreachable or misconfigured: log details, show participants nothing technical
     logging.getLogger("interview").exception("Database connection failed")
     _boot.empty()
