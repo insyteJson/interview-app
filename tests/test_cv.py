@@ -59,3 +59,46 @@ def test_rejects_unusable_uploads(data, msg):
     with pytest.raises(cv.CvError) as e:
         cv.redact_pdf(data, "Jason Harris")
     assert msg.lower() in str(e.value).lower()
+
+
+def _text(pdf):
+    d = pymupdf.open(stream=pdf, filetype="pdf")
+    t = "\n".join(p.get_text() for p in d)
+    d.close()
+    return t
+
+
+def test_later_blackout_is_cumulative_and_reports_counts():
+    first = cv.redact_pdf(make_pdf(), "Jason Harris").pdf
+    assert "Acme Robotics" in _text(first)
+    r1 = cv.redact_more(first, "Acme Robotics")
+    assert r1.report["per_term"] == {"Acme Robotics": 1} and not r1.report["leftovers"]
+    assert "Acme Robotics" not in _text(r1.pdf) and "Heidelberg" in _text(r1.pdf)
+    r2 = cv.redact_more(r1.pdf, "Heidelberg\nNotInTheCV")
+    t2 = _text(r2.pdf)
+    assert "Heidelberg" not in t2 and "Acme Robotics" not in t2 and "Jason" not in t2   # earlier rounds stay
+    assert r2.report["per_term"]["NotInTheCV"] == 0
+    assert "Product Owner" in t2                                                          # the rest is untouched
+
+
+def test_replace_cv_counts_rounds_and_asks_for_a_new_check(tmp_path):
+    from storage import Store
+    store = Store(f"sqlite:///{tmp_path}/c.db")
+    first = cv.redact_pdf(make_pdf(), "Jason Harris")
+    store.save_cv("P01", first.pdf, cv.storable_report(first.report))
+    store.mark_cv_checked("P01", True)
+    store.replace_cv_pdf("P01", cv.redact_more(first.pdf, "Acme Robotics").pdf, 1)
+    store.replace_cv_pdf("P01", cv.redact_more(store.get_cv("P01")["pdf"], "Heidelberg").pdf, 1)
+    row = store.get_cv("P01")
+    assert row["checked"] == 0 and row["report"]["researcher_blackouts"]["rounds"] == 2
+    assert row["report"]["pages"] == 1                                    # the upload report is kept
+    assert "Acme" not in _text(row["pdf"]) and "Heidelberg" not in _text(row["pdf"])
+
+
+
+def test_later_blackout_leaves_dates_alone():
+    first = cv.redact_pdf(make_pdf(), "Jason Harris").pdf
+    before = _text(first)
+    out = cv.redact_more(first, "Acme Robotics").pdf
+    after = _text(out)
+    assert sum(ch.isdigit() for ch in after) == sum(ch.isdigit() for ch in before)   # no digits removed

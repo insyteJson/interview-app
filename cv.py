@@ -136,3 +136,31 @@ def storable_report(report: dict) -> dict:
     return {"pages": report["pages"], "blacked_out": report["blacked_out"],
             "links_removed": report["links_removed"], "leftover_count": len(report["leftovers"]),
             "terms_without_match": len(report["terms_not_found"])}
+
+
+def redact_more(data: bytes, terms_text: str) -> CvResult:
+    """Researcher's later blackout on an already anonymised CV: blacks out further terms on top of what is already
+    blacked out (earlier blackouts can never be undone, since the PDF itself is changed). Only the given terms are
+    blacked out; the automatic contact patterns are not re-run, because they also match date ranges.
+    Reports matches per term for the preview; the terms themselves are never stored."""
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    terms = _terms("", terms_text)
+    found = {t: 0 for t in terms}
+    for page in doc:
+        n = 0
+        for t in terms:
+            for rect in page.search_for(t):
+                page.add_redact_annot(rect, fill=(0, 0, 0))
+                found[t] += 1
+                n += 1
+        if n:
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+    out = doc.tobytes(garbage=4, deflate=True, clean=True)
+    doc.close()
+    check = pymupdf.open(stream=out, filetype="pdf")
+    remaining = "\n".join(p.get_text() for p in check).lower()
+    previews = [p.get_pixmap(dpi=75).tobytes("png") for p in check]
+    check.close()
+    return CvResult(pdf=out, previews=previews, report={
+        "per_term": found,
+        "leftovers": [t for t in terms if t.lower() in remaining]})

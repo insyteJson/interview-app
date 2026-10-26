@@ -285,13 +285,22 @@ def _interview_tab(store, sid: str, state: dict, rows: list[dict]) -> None:
                              width="stretch")
 
 
+@st.cache_data(show_spinner=False, max_entries=32)
+def _cv_pngs(pdf: bytes) -> list[bytes]:
+    import pymupdf
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    out = [p.get_pixmap(dpi=80).tobytes("png") for p in doc]
+    doc.close()
+    return out
+
+
 def _cv_tab(store, sid: str) -> None:
+    import cv as cvmod
     cvrow = store.get_cv(sid)
     if not cvrow:
         st.caption("No CV submitted yet.")
         return
-    with st.expander("Blackout report", expanded=False):
-        st.write(cvrow["report"])
+    later = (cvrow["report"] or {}).get("researcher_blackouts")
     a, b = st.columns([1, 2], vertical_alignment="center")
     a.download_button("Download anonymised CV (PDF)", cvrow["pdf"], file_name=f"cv-{sid}.pdf", mime="application/pdf",
                       width="stretch")
@@ -300,6 +309,53 @@ def _cv_tab(store, sid: str) -> None:
     if checked != bool(cvrow["checked"]):
         store.mark_cv_checked(sid, checked)
         st.rerun()
+    if later:
+        st.caption(f"Blacked out afterwards: {later['rounds']} round(s), {later['matches']} match(es), last "
+                   f"{later['last'][:16].replace('T', ' ')} UTC.")
+    with st.expander("Blackout report from the upload", expanded=False):
+        st.write({k: v for k, v in (cvrow["report"] or {}).items() if k != "researcher_blackouts"})
+
+    left, right = st.columns([3, 2], gap="large")
+    pk = f"cvmore_{sid}"
+    pending = st.session_state.get(pk)
+    with right, st.container(border=True):
+        st.markdown("**Black out more**")
+        st.caption("One term per line (names, employers, places, project names …). It is applied on top of the "
+                   "saved CV, so everything already blacked out stays. Matching ignores upper/lower case and also "
+                   "finds the term inside longer words, so check the counts.")
+        terms = st.text_area("Terms", key=f"{pk}_terms", height=120, label_visibility="collapsed",
+                             placeholder="Hospital Heidelberg\nMüller GmbH")
+        if st.button("Black out and preview", key=f"{pk}_go", type="primary", disabled=not (terms or "").strip(),
+                     width="stretch"):
+            res = cvmod.redact_more(cvrow["pdf"], terms)
+            st.session_state[pk] = {"pdf": res.pdf, "report": res.report}
+            st.rerun()
+        if pending:
+            rep = pending["report"]
+            st.markdown("**Preview** (not saved yet)")
+            for t, n in rep["per_term"].items():
+                (st.warning if n == 0 or n > 5 else st.write)(f"{t}: {n} match(es)" +
+                                                             (" · check this is intended" if n > 5 else "") +
+                                                             (" · not found" if n == 0 else ""))
+            if rep["leftovers"]:
+                st.error("Still readable after the blackout: " + ", ".join(rep["leftovers"]))
+            total = sum(rep["per_term"].values())
+            c1, c2 = st.columns(2)
+            if c1.button("Save this version", key=f"{pk}_save", type="primary", disabled=total == 0,
+                         width="stretch"):
+                store.replace_cv_pdf(sid, pending["pdf"], total)
+                st.session_state.pop(pk, None)
+                st.session_state.pop(f"{pk}_terms", None)
+                st.success("Saved. The CV is marked as not checked: please look through it again.")
+                st.rerun()
+            if c2.button("Discard", key=f"{pk}_discard", width="stretch"):
+                st.session_state.pop(pk, None)
+                st.rerun()
+            st.caption("Saving cannot be undone: the original upload was never stored.")
+    with left:
+        st.markdown("**Preview of the result**" if pending else "**Saved CV**")
+        for k, png in enumerate(_cv_pngs(pending["pdf"] if pending else cvrow["pdf"]), 1):
+            st.image(png, caption=f"Page {k}", width="stretch")
 
 
 def _exports_tab(store) -> None:

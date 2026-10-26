@@ -250,6 +250,20 @@ class Store:
             row = c.execute(select(cvs).where(cvs.c.session_id == sid)).mappings().first()
         return dict(row) if row else None
 
+    def replace_cv_pdf(self, sid: str, pdf: bytes, matches: int) -> None:
+        """A later blackout by the researcher: replaces the PDF, keeps the upload report, counts the rounds and
+        matches (never the terms), and clears 'checked' so the CV is looked at again."""
+        with self.engine.begin() as c:
+            row = c.execute(select(cvs).where(cvs.c.session_id == sid)).mappings().first()
+            if row is None:
+                return
+            report = dict(row["report"] or {})
+            later = dict(report.get("researcher_blackouts") or {"rounds": 0, "matches": 0})
+            later = {"rounds": later["rounds"] + 1, "matches": later["matches"] + matches,
+                     "last": _now().isoformat()}
+            report["researcher_blackouts"] = later
+            c.execute(update(cvs).where(cvs.c.session_id == sid).values(pdf=pdf, report=report, checked=0))
+
     def mark_cv_checked(self, sid: str, checked: bool) -> None:
         with self.engine.begin() as c:
             c.execute(update(cvs).where(cvs.c.session_id == sid).values(checked=int(checked)))

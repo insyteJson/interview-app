@@ -235,3 +235,39 @@ def test_completed_interview_shows_cv_step_first(tmp_path, monkeypatch):
     assert at.expander and "interview answers" in at.expander[0].label
     assert engine.CLOSE_COMPLETE in [m.markdown[0].value for m in at.expander[0].chat_message if m.markdown][-1]
     st.cache_resource.clear()
+
+
+def test_admin_later_cv_blackout_in_two_rounds(tmp_path, monkeypatch):
+    import streamlit as st
+    import pymupdf
+    from storage import Store
+    sys.path.insert(0, os.path.join(APP_DIR, "tests"))
+    import test_cv as tc
+    import cv
+    st.cache_resource.clear()
+    url = f"sqlite:///{tmp_path}/cvb.db"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+    monkeypatch.chdir(APP_DIR)
+    store = Store(url)
+    base = {"rule": "r", "phase_before": "start", "meta": None, "accepted": 0, "declined": 0, "audit": "",
+            "audit_note": "", "turn": 0, "answer_raw": "", "question_shown": "q", "qid": "", "classification": None}
+    store.create_session("P01", {"status": "complete", "incidents": [], "positions": [], "turn": 1, "phase": "done",
+                                 "pos_idx": 0}, base)
+    first = cv.redact_pdf(tc.make_pdf(), "Jason Harris")
+    store.save_cv("P01", first.pdf, cv.storable_report(first.report))
+    at = AppTest.from_file(os.path.join(APP_DIR, "app.py"), default_timeout=60)
+    at.query_params["admin"] = "1"
+    at.run()
+    at.text_input(key="admin_pw").input("pw").run()
+    at.segmented_control(key="admin_sub").set_value("CV").run()
+    for term in ("Acme Robotics", "Heidelberg"):
+        at.text_area(key="cvmore_P01_terms").input(term).run()
+        at.button(key="cvmore_P01_go").click().run()
+        assert not at.exception, at.exception
+        at.button(key="cvmore_P01_save").click().run()
+        assert not at.exception, at.exception
+    text = "\n".join(p.get_text() for p in pymupdf.open(stream=store.get_cv("P01")["pdf"], filetype="pdf"))
+    assert "Acme" not in text and "Heidelberg" not in text and "Product Owner" in text
+    assert store.get_cv("P01")["report"]["researcher_blackouts"]["rounds"] == 2
+    st.cache_resource.clear()
